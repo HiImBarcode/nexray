@@ -11,6 +11,7 @@ import sqlite3
 import hashlib
 import uuid
 import os
+import mimetypes
 from datetime import datetime, timezone
 from contextlib import contextmanager
 
@@ -532,7 +533,7 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_tag_cut ON tag_labels(cut_transaction_id);
         CREATE INDEX IF NOT EXISTS idx_audit_object ON audit_logs(object_type, object_id);
         CREATE INDEX IF NOT EXISTS idx_integ_status ON integration_events(status);
-        """)
+        """);
 
         # Seed demo data if empty
         if db.execute("SELECT COUNT(*) FROM entities").fetchone()[0] == 0:
@@ -963,14 +964,17 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/")
 async def serve_index():
-    return FileResponse("static/index.html")
+    return FileResponse("static/index.html", media_type="text/html")
 
 @app.get("/{path:path}")
 async def catch_all(path: str):
     file_path = f"static/{path}"
     if os.path.isfile(file_path):
-        return FileResponse(file_path)
-    return FileResponse("static/index.html")
+        mime_type, _ = mimetypes.guess_type(file_path)
+        if mime_type is None:
+            mime_type = "application/octet-stream"
+        return FileResponse(file_path, media_type=mime_type)
+    return FileResponse("static/index.html", media_type="text/html")
 
 
 # ===== STARTUP =====
