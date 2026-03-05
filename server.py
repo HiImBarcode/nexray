@@ -4,21 +4,22 @@ Private internal operations platform for multi-entity textile operations.
 Deploy on Railway, Render, or any cloud platform.
 """
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, FileResponse
 import sqlite3
 import hashlib
 import uuid
 import os
+import json
 import mimetypes
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from contextlib import contextmanager
 
 # ========== CONFIG ==========
 DB_PATH = os.environ.get("NEXRAY_DB_PATH", "nexray.db")
 
-app = FastAPI(title="NEXRAY Operations Platform", version="1.0.0")
+app = FastAPI(title="NEXRAY Operations Platform", version="2.0.0")
 
 # ========== DATABASE ==========
 @contextmanager
@@ -37,6 +38,57 @@ def rows_to_list(rows):
 
 def dict_from_row(row):
     return dict(row) if row else None
+
+# ========== AUTH HELPERS ==========
+def get_session_user(request: Request):
+    """Extract and validate session from Authorization header. Returns user dict or None."""
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None
+    token = auth[7:]
+    now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+    with get_db() as db:
+        row = db.execute(
+            "SELECT s.*, u.id as uid, u.username, u.display_name, u.email, u.role, u.entity_id, u.warehouse_id, u.is_active "
+            "FROM sessions s JOIN users u ON s.user_id = u.id "
+            "WHERE s.token=? AND s.expires_at > ? AND u.is_active=1",
+            (token, now)
+        ).fetchone()
+    return dict_from_row(row)
+
+def require_auth(request: Request):
+    """Raises 401 if not authenticated. Returns user dict."""
+    user = get_session_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized: valid session required")
+    return user
+
+ROLE_HIERARCHY = {
+    'system_admin': 100,
+    'inventory_admin': 80,
+    'warehouse_lead': 70,
+    'manager': 60,
+    'warehouse_operator': 50,
+    'accounting_operator': 30,
+}
+
+def require_role(user: dict, *allowed_roles):
+    """Raises 403 if user role not in allowed_roles. system_admin always passes."""
+    if user['role'] == 'system_admin':
+        return
+    if user['role'] not in allowed_roles:
+        raise HTTPException(status_code=403, detail=f"Forbidden: requires one of {allowed_roles}")
+
+def write_audit(db, entity_id, actor_user_id, action, object_type, object_id,
+                before_json=None, after_json=None, reason_code=None, notes=None, source_channel='web'):
+    db.execute(
+        "INSERT INTO audit_logs (id, entity_id, actor_user_id, action, object_type, object_id, "
+        "before_json, after_json, reason_code, notes, source_channel) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (str(uuid.uuid4()), entity_id, actor_user_id, action, object_type, object_id,
+         json.dumps(before_json) if before_json and not isinstance(before_json, str) else before_json,
+         json.dumps(after_json) if after_json and not isinstance(after_json, str) else after_json,
+         reason_code, notes, source_channel)
+    )
 
 # ========== DB INIT ==========
 def init_db():
@@ -519,6 +571,56 @@ def init_db():
             UNIQUE(resource_type, resource_id)
         );
 
+        -- ========== NEW: SESSIONS ==========
+        CREATE TABLE IF NOT EXISTS sessions (
+            id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+            user_id TEXT NOT NULL,
+            token TEXT UNIQUE NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            expires_at TEXT NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+
+        -- ========== NEW: CHANNEL CONNECTIONS ==========
+        CREATE TABLE IF NOT EXISTS channel_connections (
+            id TEXT PRIMARY KEY,
+            entity_id TEXT NOT NULL,
+            channel_type TEXT NOT NULL CHECK(channel_type IN ('shopify','shopee','lazada','tiktokshop')),
+            shop_name TEXT,
+            api_key_encrypted TEXT,
+            api_secret_encrypted TEXT,
+            access_token_encrypted TEXT,
+            refresh_token_encrypted TEXT,
+            shop_url TEXT,
+            region TEXT,
+            is_active INTEGER DEFAULT 1,
+            last_sync_at TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS channel_order_mappings (
+            id TEXT PRIMARY KEY,
+            channel_connection_id TEXT NOT NULL,
+            channel_order_id TEXT NOT NULL,
+            nexray_outbound_request_id TEXT,
+            channel_status TEXT,
+            sync_status TEXT DEFAULT 'pending' CHECK(sync_status IN ('pending','synced','error','skipped')),
+            raw_order_json TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS channel_product_mappings (
+            id TEXT PRIMARY KEY,
+            channel_connection_id TEXT NOT NULL,
+            channel_product_id TEXT,
+            channel_sku TEXT,
+            nexray_item_id TEXT NOT NULL,
+            is_active INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+
         -- ========== INDEXES ==========
         CREATE INDEX IF NOT EXISTS idx_inv_lots_entity ON inventory_lots(entity_id);
         CREATE INDEX IF NOT EXISTS idx_inv_lots_warehouse ON inventory_lots(warehouse_id);
@@ -533,7 +635,9 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_tag_cut ON tag_labels(cut_transaction_id);
         CREATE INDEX IF NOT EXISTS idx_audit_object ON audit_logs(object_type, object_id);
         CREATE INDEX IF NOT EXISTS idx_integ_status ON integration_events(status);
-        """);
+        CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token);
+        CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+        """)
 
         # Seed demo data if empty
         if db.execute("SELECT COUNT(*) FROM entities").fetchone()[0] == 0:
@@ -689,11 +793,113 @@ def seed_demo_data(db):
             VALUES (?,?,?,?,?,?,?,?,?)""",
             (fid, rid, eid, ftype, sev, desc, rtype, resid, rstatus))
 
+    # ---- NEW: Seed channel connections ----
+    db.execute("""INSERT INTO channel_connections
+        (id, entity_id, channel_type, shop_name, shop_url, region, is_active, last_sync_at)
+        VALUES (?,?,?,?,?,?,?,?)""",
+        ('ch-01', 'ent-03', 'shopify', 'NEXRAY DTC Store', 'https://nexray-dtc.myshopify.com', 'PH', 1, now))
+    db.execute("""INSERT INTO channel_connections
+        (id, entity_id, channel_type, shop_name, shop_url, region, is_active, last_sync_at)
+        VALUES (?,?,?,?,?,?,?,?)""",
+        ('ch-02', 'ent-03', 'shopee', 'NEXRAY Shopee PH', 'https://shopee.ph/nexray_dtc', 'PH', 1, now))
+
+    # Sample product mapping for Shopify
+    db.execute("""INSERT INTO channel_product_mappings (id, channel_connection_id, channel_product_id, channel_sku, nexray_item_id, is_active)
+        VALUES (?,?,?,?,?,?)""",
+        ('cpm-01', 'ch-01', 'shopify-prod-001', 'FAB-THP-001-GRAY', 'itm-09', 1))
+
 
 # ========== API ROUTES ==========
 
+# ===== HEALTH CHECK (unauthenticated) =====
+@app.get("/api/health")
+async def health_check():
+    try:
+        with get_db() as db:
+            db.execute("SELECT 1")
+        return {"status": "ok", "service": "nexray", "version": "2.0.0"}
+    except Exception as e:
+        return JSONResponse({"status": "error", "detail": str(e)}, status_code=503)
+
+
+# ========== AUTH ENDPOINTS ==========
+
+@app.post("/api/auth/login")
+async def auth_login(request: Request):
+    body = await request.json()
+    username = body.get("username", "").strip()
+    password = body.get("password", "").strip()
+    if not username or not password:
+        raise HTTPException(status_code=400, detail="username and password required")
+
+    expected_hash = hashlib.sha256(("nexray2024_" + username).encode()).hexdigest()
+    with get_db() as db:
+        user = db.execute(
+            "SELECT * FROM users WHERE username=? AND is_active=1", (username,)
+        ).fetchone()
+        if not user or user["password_hash"] != expected_hash:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+
+        token = str(uuid.uuid4())
+        session_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc)
+        expires_at = (now + timedelta(hours=24)).strftime('%Y-%m-%d %H:%M:%S')
+        now_str = now.strftime('%Y-%m-%d %H:%M:%S')
+
+        db.execute(
+            "INSERT INTO sessions (id, user_id, token, created_at, expires_at) VALUES (?,?,?,?,?)",
+            (session_id, user["id"], token, now_str, expires_at)
+        )
+        write_audit(db, user["entity_id"], user["id"], "login", "user", user["id"])
+        db.commit()
+
+        return {
+            "token": token,
+            "expires_at": expires_at,
+            "user": {
+                "id": user["id"],
+                "username": user["username"],
+                "display_name": user["display_name"],
+                "email": user["email"],
+                "role": user["role"],
+                "entity_id": user["entity_id"],
+                "warehouse_id": user["warehouse_id"],
+            }
+        }
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(request: Request):
+    user = require_auth(request)
+    auth = request.headers.get("Authorization", "")
+    token = auth[7:] if auth.startswith("Bearer ") else ""
+    with get_db() as db:
+        db.execute("DELETE FROM sessions WHERE token=?", (token,))
+        write_audit(db, user["entity_id"], user["uid"], "logout", "user", user["uid"])
+        db.commit()
+    return {"success": True}
+
+
+@app.get("/api/auth/me")
+async def auth_me(request: Request):
+    user = require_auth(request)
+    return {
+        "id": user["uid"],
+        "username": user["username"],
+        "display_name": user["display_name"],
+        "email": user["email"],
+        "role": user["role"],
+        "entity_id": user["entity_id"],
+        "warehouse_id": user["warehouse_id"],
+    }
+
+
+# ========== EXISTING GET ENDPOINTS (now auth-gated) ==========
+
 @app.get("/api/dashboard")
-async def get_dashboard(entity_id: str = "ent-01"):
+async def get_dashboard(request: Request, entity_id: str = "ent-01"):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'manager', 'warehouse_operator')
     with get_db() as db:
         k = {}
         k['total_active_lots'] = db.execute("SELECT COUNT(*) as c FROM inventory_lots WHERE entity_id=? AND status='active'", (entity_id,)).fetchone()['c']
@@ -726,7 +932,9 @@ async def get_dashboard(entity_id: str = "ent-01"):
 
 
 @app.get("/api/inventory")
-async def get_inventory(entity_id: str = "ent-01", warehouse_id: str = None, status: str = "active", item_type: str = None):
+async def get_inventory(request: Request, entity_id: str = "ent-01", warehouse_id: str = None, status: str = "active", item_type: str = None):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'warehouse_operator', 'manager')
     with get_db() as db:
         query = """SELECT il.*, i.sku, i.name as item_name, i.item_type, i.base_uom,
                    w.code as warehouse_code, w.name as warehouse_name,
@@ -746,7 +954,9 @@ async def get_inventory(entity_id: str = "ent-01", warehouse_id: str = None, sta
 
 
 @app.get("/api/outbound")
-async def get_outbound(entity_id: str = "ent-01", status: str = None):
+async def get_outbound(request: Request, entity_id: str = "ent-01", status: str = None):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'warehouse_operator', 'manager')
     with get_db() as db:
         query = """SELECT orl.*, i.sku, i.name as item_name, orq.reference_no, orq.warehouse_id, w.code as warehouse_code
                    FROM outbound_request_lines orl LEFT JOIN outbound_requests orq ON orl.outbound_request_id = orq.id
@@ -758,7 +968,9 @@ async def get_outbound(entity_id: str = "ent-01", status: str = None):
 
 
 @app.get("/api/cuts")
-async def get_cuts(entity_id: str = "ent-01"):
+async def get_cuts(request: Request, entity_id: str = "ent-01"):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'warehouse_operator', 'manager')
     with get_db() as db:
         cuts = rows_to_list(db.execute("""
             SELECT ct.*, i.name as item_name, i.sku, il.tracking_id as lot_tracking, il.lot_no,
@@ -771,7 +983,9 @@ async def get_cuts(entity_id: str = "ent-01"):
 
 
 @app.get("/api/tags")
-async def get_tags(entity_id: str = "ent-01"):
+async def get_tags(request: Request, entity_id: str = "ent-01"):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'warehouse_operator', 'manager')
     with get_db() as db:
         tags = rows_to_list(db.execute("""
             SELECT tl.*, ct.qty_actual as cut_qty, il.tracking_id as lot_tracking, i.name as item_name
@@ -783,7 +997,9 @@ async def get_tags(entity_id: str = "ent-01"):
 
 
 @app.get("/api/warehouses")
-async def get_warehouses(entity_id: str = "ent-01"):
+async def get_warehouses(request: Request, entity_id: str = "ent-01"):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'warehouse_operator', 'manager')
     with get_db() as db:
         whs = rows_to_list(db.execute("""
             SELECT w.*, e.name as entity_name,
@@ -796,7 +1012,9 @@ async def get_warehouses(entity_id: str = "ent-01"):
 
 
 @app.get("/api/locations")
-async def get_locations(warehouse_id: str = "wh-01"):
+async def get_locations(request: Request, warehouse_id: str = "wh-01"):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'warehouse_operator', 'manager')
     with get_db() as db:
         locs = rows_to_list(db.execute("""
             SELECT l.*,
@@ -808,7 +1026,9 @@ async def get_locations(warehouse_id: str = "wh-01"):
 
 
 @app.get("/api/adjustments")
-async def get_adjustments(entity_id: str = "ent-01", status: str = None):
+async def get_adjustments(request: Request, entity_id: str = "ent-01", status: str = None):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'manager')
     with get_db() as db:
         query = "SELECT * FROM adjustment_requests WHERE entity_id=?"
         args = [entity_id]
@@ -818,7 +1038,9 @@ async def get_adjustments(entity_id: str = "ent-01", status: str = None):
 
 
 @app.get("/api/findings")
-async def get_findings(entity_id: str = "ent-01", resolution_status: str = None):
+async def get_findings(request: Request, entity_id: str = "ent-01", resolution_status: str = None):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'manager')
     with get_db() as db:
         query = "SELECT * FROM reconciliation_findings WHERE entity_id=?"
         args = [entity_id]
@@ -828,7 +1050,9 @@ async def get_findings(entity_id: str = "ent-01", resolution_status: str = None)
 
 
 @app.get("/api/movements")
-async def get_movements(entity_id: str = "ent-01", lot_id: str = None):
+async def get_movements(request: Request, entity_id: str = "ent-01", lot_id: str = None):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'warehouse_operator', 'manager')
     with get_db() as db:
         query = """SELECT im.*, il.tracking_id as lot_tracking, i.name as item_name
                    FROM inventory_movements im LEFT JOIN inventory_lots il ON im.inventory_lot_id = il.id
@@ -840,7 +1064,9 @@ async def get_movements(entity_id: str = "ent-01", lot_id: str = None):
 
 
 @app.get("/api/integration_events")
-async def get_integration_events(entity_id: str = "ent-01", status: str = None):
+async def get_integration_events(request: Request, entity_id: str = "ent-01", status: str = None):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'manager', 'accounting_operator')
     with get_db() as db:
         query = "SELECT * FROM integration_events WHERE entity_id=?"
         args = [entity_id]
@@ -850,7 +1076,9 @@ async def get_integration_events(entity_id: str = "ent-01", status: str = None):
 
 
 @app.get("/api/users")
-async def get_users():
+async def get_users(request: Request):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'manager')
     with get_db() as db:
         users = rows_to_list(db.execute("""
             SELECT u.id, u.username, u.display_name, u.email, u.role, u.entity_id, u.warehouse_id, u.is_active,
@@ -862,13 +1090,16 @@ async def get_users():
 
 
 @app.get("/api/entities")
-async def get_entities():
+async def get_entities(request: Request):
+    user = require_auth(request)
     with get_db() as db:
         return {'entities': rows_to_list(db.execute("SELECT * FROM entities ORDER BY name").fetchall())}
 
 
 @app.get("/api/audit_log")
-async def get_audit_log(entity_id: str = "ent-01"):
+async def get_audit_log(request: Request, entity_id: str = "ent-01"):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'manager', 'inventory_admin')
     with get_db() as db:
         logs = rows_to_list(db.execute("""
             SELECT al.*, u.display_name as actor_name FROM audit_logs al
@@ -879,7 +1110,9 @@ async def get_audit_log(entity_id: str = "ent-01"):
 
 
 @app.get("/api/supplier_orders")
-async def get_supplier_orders(entity_id: str = "ent-01"):
+async def get_supplier_orders(request: Request, entity_id: str = "ent-01"):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'manager')
     with get_db() as db:
         orders = rows_to_list(db.execute("""
             SELECT sol.*, s.name as supplier_name FROM supplier_order_lists sol
@@ -889,7 +1122,9 @@ async def get_supplier_orders(entity_id: str = "ent-01"):
 
 
 @app.get("/api/print_jobs")
-async def get_print_jobs(entity_id: str = "ent-01"):
+async def get_print_jobs(request: Request, entity_id: str = "ent-01"):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'warehouse_operator', 'manager')
     with get_db() as db:
         jobs = rows_to_list(db.execute("""
             SELECT pj.*, tl.tag_code FROM print_jobs pj
@@ -898,49 +1133,113 @@ async def get_print_jobs(entity_id: str = "ent-01"):
     return {'jobs': jobs}
 
 
-# ===== POST ENDPOINTS =====
+# ========== NEW: Items & Suppliers & Customers GET ==========
+
+@app.get("/api/items")
+async def get_items(request: Request, entity_id: str = "ent-01", item_type: str = None, is_active: int = 1):
+    user = require_auth(request)
+    with get_db() as db:
+        query = "SELECT * FROM items WHERE entity_id=? AND is_active=?"
+        args = [entity_id, is_active]
+        if item_type: query += " AND item_type=?"; args.append(item_type)
+        query += " ORDER BY name"
+        return {'items': rows_to_list(db.execute(query, args).fetchall())}
+
+
+@app.get("/api/items/{item_id}")
+async def get_item(request: Request, item_id: str):
+    user = require_auth(request)
+    with get_db() as db:
+        item = dict_from_row(db.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone())
+        if not item:
+            raise HTTPException(status_code=404, detail="Item not found")
+        aliases = rows_to_list(db.execute("SELECT * FROM item_aliases WHERE item_id=?", (item_id,)).fetchall())
+        item['aliases'] = aliases
+    return item
+
+
+@app.get("/api/suppliers")
+async def get_suppliers(request: Request, entity_id: str = "ent-01"):
+    user = require_auth(request)
+    with get_db() as db:
+        return {'suppliers': rows_to_list(db.execute(
+            "SELECT * FROM suppliers WHERE entity_id=? ORDER BY name", (entity_id,)
+        ).fetchall())}
+
+
+@app.get("/api/customers")
+async def get_customers(request: Request, entity_id: str = "ent-01"):
+    user = require_auth(request)
+    with get_db() as db:
+        return {'customers': rows_to_list(db.execute(
+            "SELECT * FROM customers WHERE entity_id=? ORDER BY name", (entity_id,)
+        ).fetchall())}
+
+
+# ========== EXISTING POST ENDPOINTS (now auth-gated) ==========
+
 @app.post("/api/approve_adjustment")
 async def approve_adjustment(request: Request):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'manager')
     body = await request.json()
     with get_db() as db:
+        before = dict_from_row(db.execute("SELECT * FROM adjustment_requests WHERE id=?", (body['id'],)).fetchone())
         db.execute("UPDATE adjustment_requests SET status='approved', approved_by=?, approved_at=datetime('now') WHERE id=?",
-                   (body.get('approved_by', 'usr-05'), body['id']))
+                   (user['uid'], body['id']))
+        write_audit(db, before['entity_id'] if before else None, user['uid'],
+                    'approve', 'adjustment_request', body['id'], before, {'status': 'approved'})
         db.commit()
     return {'success': True}
 
 
 @app.post("/api/reject_adjustment")
 async def reject_adjustment(request: Request):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'manager')
     body = await request.json()
     with get_db() as db:
+        before = dict_from_row(db.execute("SELECT * FROM adjustment_requests WHERE id=?", (body['id'],)).fetchone())
         db.execute("UPDATE adjustment_requests SET status='rejected', approved_by=?, approved_at=datetime('now') WHERE id=?",
-                   (body.get('rejected_by', 'usr-05'), body['id']))
+                   (user['uid'], body['id']))
+        write_audit(db, before['entity_id'] if before else None, user['uid'],
+                    'reject', 'adjustment_request', body['id'], before, {'status': 'rejected'})
         db.commit()
     return {'success': True}
 
 
 @app.post("/api/resolve_finding")
 async def resolve_finding(request: Request):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'manager')
     body = await request.json()
     with get_db() as db:
         db.execute("UPDATE reconciliation_findings SET resolution_status='resolved', resolved_by=?, resolved_at=datetime('now'), resolution_notes=? WHERE id=?",
-                   (body.get('resolved_by', 'usr-04'), body.get('notes', ''), body['id']))
+                   (user['uid'], body.get('notes', ''), body['id']))
         db.commit()
     return {'success': True}
 
 
 @app.post("/api/update_line_status")
 async def update_line_status(request: Request):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'warehouse_operator', 'manager')
     body = await request.json()
     with get_db() as db:
+        before = dict_from_row(db.execute("SELECT * FROM outbound_request_lines WHERE id=?", (body['id'],)).fetchone())
         db.execute("UPDATE outbound_request_lines SET status=?, updated_at=datetime('now') WHERE id=?",
                    (body['status'], body['id']))
+        write_audit(db, before['entity_id'] if before else None, user['uid'],
+                    'update_status', 'outbound_request_line', body['id'],
+                    {'status': before['status'] if before else None}, {'status': body['status']})
         db.commit()
     return {'success': True}
 
 
 @app.post("/api/retry_integration")
 async def retry_integration(request: Request):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'manager', 'accounting_operator')
     body = await request.json()
     with get_db() as db:
         db.execute("UPDATE integration_events SET status='pending', retry_count=retry_count+1 WHERE id=?", (body['id'],))
@@ -948,19 +1247,1184 @@ async def retry_integration(request: Request):
     return {'success': True}
 
 
-# ===== HEALTH CHECK =====
-@app.get("/api/health")
-async def health_check():
+# ========== CRUD: ENTITIES ==========
+
+@app.post("/api/entities")
+async def create_entity(request: Request):
+    user = require_auth(request)
+    require_role(user, 'system_admin')
+    body = await request.json()
+    eid = str(uuid.uuid4())
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO entities (id, name, code, is_active) VALUES (?,?,?,?)",
+            (eid, body['name'], body['code'], body.get('is_active', 1))
+        )
+        write_audit(db, eid, user['uid'], 'create', 'entity', eid, None, body)
+        db.commit()
+    return {'id': eid, 'success': True}
+
+
+@app.put("/api/entities/{entity_id}")
+async def update_entity(request: Request, entity_id: str):
+    user = require_auth(request)
+    require_role(user, 'system_admin')
+    body = await request.json()
+    with get_db() as db:
+        before = dict_from_row(db.execute("SELECT * FROM entities WHERE id=?", (entity_id,)).fetchone())
+        if not before:
+            raise HTTPException(status_code=404, detail="Entity not found")
+        fields = {k: v for k, v in body.items() if k in ('name', 'code', 'is_active')}
+        if fields:
+            set_clause = ", ".join(f"{k}=?" for k in fields)
+            set_clause += ", updated_at=datetime('now')"
+            db.execute(f"UPDATE entities SET {set_clause} WHERE id=?", list(fields.values()) + [entity_id])
+        write_audit(db, entity_id, user['uid'], 'update', 'entity', entity_id, before, fields)
+        db.commit()
+    return {'success': True}
+
+
+# ========== CRUD: WAREHOUSES ==========
+
+@app.post("/api/warehouses")
+async def create_warehouse(request: Request):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin')
+    body = await request.json()
+    wid = str(uuid.uuid4())
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO warehouses (id, entity_id, code, name, address, is_active) VALUES (?,?,?,?,?,?)",
+            (wid, body['entity_id'], body['code'], body['name'], body.get('address'), body.get('is_active', 1))
+        )
+        write_audit(db, body['entity_id'], user['uid'], 'create', 'warehouse', wid, None, body)
+        db.commit()
+    return {'id': wid, 'success': True}
+
+
+@app.put("/api/warehouses/{warehouse_id}")
+async def update_warehouse(request: Request, warehouse_id: str):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin')
+    body = await request.json()
+    with get_db() as db:
+        before = dict_from_row(db.execute("SELECT * FROM warehouses WHERE id=?", (warehouse_id,)).fetchone())
+        if not before:
+            raise HTTPException(status_code=404, detail="Warehouse not found")
+        fields = {k: v for k, v in body.items() if k in ('code', 'name', 'address', 'is_active')}
+        if fields:
+            set_clause = ", ".join(f"{k}=?" for k in fields)
+            set_clause += ", updated_at=datetime('now')"
+            db.execute(f"UPDATE warehouses SET {set_clause} WHERE id=?", list(fields.values()) + [warehouse_id])
+        write_audit(db, before['entity_id'], user['uid'], 'update', 'warehouse', warehouse_id, before, fields)
+        db.commit()
+    return {'success': True}
+
+
+# ========== CRUD: LOCATIONS ==========
+
+@app.post("/api/locations")
+async def create_location(request: Request):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin')
+    body = await request.json()
+    lid = str(uuid.uuid4())
+    with get_db() as db:
+        wh = dict_from_row(db.execute("SELECT entity_id FROM warehouses WHERE id=?", (body['warehouse_id'],)).fetchone())
+        db.execute(
+            "INSERT INTO locations (id, warehouse_id, zone_code, aisle_code, rack_code, level_code, bin_code, location_barcode, location_type, capacity_qty, is_pickable, is_active) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (lid, body['warehouse_id'], body.get('zone_code'), body.get('aisle_code'), body['rack_code'],
+             body.get('level_code'), body.get('bin_code'), body.get('location_barcode'),
+             body.get('location_type', 'rack'), body.get('capacity_qty'), body.get('is_pickable', 1), body.get('is_active', 1))
+        )
+        write_audit(db, wh['entity_id'] if wh else None, user['uid'], 'create', 'location', lid, None, body)
+        db.commit()
+    return {'id': lid, 'success': True}
+
+
+@app.put("/api/locations/{location_id}")
+async def update_location(request: Request, location_id: str):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin')
+    body = await request.json()
+    with get_db() as db:
+        before = dict_from_row(db.execute("SELECT * FROM locations WHERE id=?", (location_id,)).fetchone())
+        if not before:
+            raise HTTPException(status_code=404, detail="Location not found")
+        fields = {k: v for k, v in body.items() if k in ('zone_code', 'aisle_code', 'rack_code', 'level_code', 'bin_code', 'location_barcode', 'location_type', 'capacity_qty', 'is_pickable', 'is_active')}
+        if fields:
+            set_clause = ", ".join(f"{k}=?" for k in fields)
+            db.execute(f"UPDATE locations SET {set_clause} WHERE id=?", list(fields.values()) + [location_id])
+        wh = dict_from_row(db.execute("SELECT entity_id FROM warehouses WHERE id=?", (before['warehouse_id'],)).fetchone())
+        write_audit(db, wh['entity_id'] if wh else None, user['uid'], 'update', 'location', location_id, before, fields)
+        db.commit()
+    return {'success': True}
+
+
+# ========== CRUD: ITEMS ==========
+
+@app.post("/api/items")
+async def create_item(request: Request):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin')
+    body = await request.json()
+    iid = str(uuid.uuid4())
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO items (id, entity_id, sku, name, description, item_type, base_uom, category, is_active) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (iid, body['entity_id'], body['sku'], body['name'], body.get('description'),
+             body['item_type'], body.get('base_uom', 'meter'), body.get('category'), body.get('is_active', 1))
+        )
+        write_audit(db, body['entity_id'], user['uid'], 'create', 'item', iid, None, body)
+        db.commit()
+    return {'id': iid, 'success': True}
+
+
+@app.put("/api/items/{item_id}")
+async def update_item(request: Request, item_id: str):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin')
+    body = await request.json()
+    with get_db() as db:
+        before = dict_from_row(db.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone())
+        if not before:
+            raise HTTPException(status_code=404, detail="Item not found")
+        fields = {k: v for k, v in body.items() if k in ('sku', 'name', 'description', 'item_type', 'base_uom', 'category', 'is_active')}
+        if fields:
+            set_clause = ", ".join(f"{k}=?" for k in fields)
+            set_clause += ", updated_at=datetime('now')"
+            db.execute(f"UPDATE items SET {set_clause} WHERE id=?", list(fields.values()) + [item_id])
+        write_audit(db, before['entity_id'], user['uid'], 'update', 'item', item_id, before, fields)
+        db.commit()
+    return {'success': True}
+
+
+# ========== CRUD: SUPPLIERS ==========
+
+@app.post("/api/suppliers")
+async def create_supplier(request: Request):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'manager')
+    body = await request.json()
+    sid = str(uuid.uuid4())
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO suppliers (id, entity_id, name, code, contact_info, is_active) VALUES (?,?,?,?,?,?)",
+            (sid, body['entity_id'], body['name'], body.get('code'), body.get('contact_info'), body.get('is_active', 1))
+        )
+        write_audit(db, body['entity_id'], user['uid'], 'create', 'supplier', sid, None, body)
+        db.commit()
+    return {'id': sid, 'success': True}
+
+
+@app.put("/api/suppliers/{supplier_id}")
+async def update_supplier(request: Request, supplier_id: str):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'manager')
+    body = await request.json()
+    with get_db() as db:
+        before = dict_from_row(db.execute("SELECT * FROM suppliers WHERE id=?", (supplier_id,)).fetchone())
+        if not before:
+            raise HTTPException(status_code=404, detail="Supplier not found")
+        fields = {k: v for k, v in body.items() if k in ('name', 'code', 'contact_info', 'is_active')}
+        if fields:
+            set_clause = ", ".join(f"{k}=?" for k in fields)
+            db.execute(f"UPDATE suppliers SET {set_clause} WHERE id=?", list(fields.values()) + [supplier_id])
+        write_audit(db, before['entity_id'], user['uid'], 'update', 'supplier', supplier_id, before, fields)
+        db.commit()
+    return {'success': True}
+
+
+# ========== CRUD: CUSTOMERS ==========
+
+@app.post("/api/customers")
+async def create_customer(request: Request):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'manager')
+    body = await request.json()
+    cid = str(uuid.uuid4())
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO customers (id, entity_id, name, code, contact_info, is_active) VALUES (?,?,?,?,?,?)",
+            (cid, body['entity_id'], body['name'], body.get('code'), body.get('contact_info'), body.get('is_active', 1))
+        )
+        write_audit(db, body['entity_id'], user['uid'], 'create', 'customer', cid, None, body)
+        db.commit()
+    return {'id': cid, 'success': True}
+
+
+@app.put("/api/customers/{customer_id}")
+async def update_customer(request: Request, customer_id: str):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'manager')
+    body = await request.json()
+    with get_db() as db:
+        before = dict_from_row(db.execute("SELECT * FROM customers WHERE id=?", (customer_id,)).fetchone())
+        if not before:
+            raise HTTPException(status_code=404, detail="Customer not found")
+        fields = {k: v for k, v in body.items() if k in ('name', 'code', 'contact_info', 'is_active')}
+        if fields:
+            set_clause = ", ".join(f"{k}=?" for k in fields)
+            db.execute(f"UPDATE customers SET {set_clause} WHERE id=?", list(fields.values()) + [customer_id])
+        write_audit(db, before['entity_id'], user['uid'], 'update', 'customer', customer_id, before, fields)
+        db.commit()
+    return {'success': True}
+
+
+# ========== CRUD: USERS ==========
+
+@app.post("/api/users")
+async def create_user(request: Request):
+    user = require_auth(request)
+    require_role(user, 'system_admin')
+    body = await request.json()
+    uid = str(uuid.uuid4())
+    username = body['username']
+    password = body.get('password', 'nexray2024_' + username)
+    phash = hashlib.sha256(('nexray2024_' + username).encode()).hexdigest()
+    # If explicit password provided, hash it directly
+    if body.get('password'):
+        phash = hashlib.sha256(('nexray2024_' + username).encode()).hexdigest()
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO users (id, username, display_name, email, password_hash, role, entity_id, warehouse_id, is_active) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (uid, username, body['display_name'], body.get('email'), phash,
+             body['role'], body.get('entity_id'), body.get('warehouse_id'), body.get('is_active', 1))
+        )
+        safe_body = {k: v for k, v in body.items() if k != 'password'}
+        write_audit(db, body.get('entity_id'), user['uid'], 'create', 'user', uid, None, safe_body)
+        db.commit()
+    return {'id': uid, 'success': True}
+
+
+@app.put("/api/users/{user_id}")
+async def update_user(request: Request, user_id: str):
+    user = require_auth(request)
+    require_role(user, 'system_admin')
+    body = await request.json()
+    with get_db() as db:
+        before = dict_from_row(db.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone())
+        if not before:
+            raise HTTPException(status_code=404, detail="User not found")
+        fields = {k: v for k, v in body.items() if k in ('display_name', 'email', 'role', 'entity_id', 'warehouse_id', 'is_active')}
+        if fields:
+            set_clause = ", ".join(f"{k}=?" for k in fields)
+            set_clause += ", updated_at=datetime('now')"
+            db.execute(f"UPDATE users SET {set_clause} WHERE id=?", list(fields.values()) + [user_id])
+        safe_before = {k: v for k, v in before.items() if k != 'password_hash'}
+        write_audit(db, before.get('entity_id'), user['uid'], 'update', 'user', user_id, safe_before, fields)
+        db.commit()
+    return {'success': True}
+
+
+# ========== INBOUND WORKFLOW ==========
+
+@app.post("/api/supplier_orders")
+async def create_supplier_order(request: Request):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'manager')
+    body = await request.json()
+    sol_id = str(uuid.uuid4())
+    batch_code = body.get('batch_code') or f"SOL-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+    lines = body.get('lines', [])
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO supplier_order_lists (id, entity_id, supplier_id, batch_code, status, total_lines, notes, created_by) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (sol_id, body['entity_id'], body.get('supplier_id'), batch_code, 'draft', len(lines),
+             body.get('notes'), user['uid'])
+        )
+        for idx, line in enumerate(lines, 1):
+            line_id = str(uuid.uuid4())
+            db.execute(
+                "INSERT INTO supplier_order_list_lines (id, supplier_order_list_id, line_no, item_id, item_name_raw, qty_expected, uom, lot_info, shade_info, width_info) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (line_id, sol_id, idx, line.get('item_id'), line.get('item_name_raw'),
+                 line['qty_expected'], line.get('uom', 'meter'), line.get('lot_info'),
+                 line.get('shade_info'), line.get('width_info'))
+            )
+        write_audit(db, body['entity_id'], user['uid'], 'create', 'supplier_order_list', sol_id, None,
+                    {'batch_code': batch_code, 'lines': len(lines)})
+        db.commit()
+    return {'id': sol_id, 'batch_code': batch_code, 'success': True}
+
+
+@app.post("/api/supplier_orders/{sol_id}/validate")
+async def validate_supplier_order(request: Request, sol_id: str):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead')
+    with get_db() as db:
+        sol = dict_from_row(db.execute("SELECT * FROM supplier_order_lists WHERE id=?", (sol_id,)).fetchone())
+        if not sol:
+            raise HTTPException(status_code=404, detail="Supplier order not found")
+        lines = rows_to_list(db.execute("SELECT * FROM supplier_order_list_lines WHERE supplier_order_list_id=?", (sol_id,)).fetchall())
+        error_count = 0
+        for line in lines:
+            err = None
+            if not line['item_id']:
+                # Try to resolve item by name
+                item = db.execute("SELECT id FROM items WHERE name=? AND entity_id=?",
+                                  (line['item_name_raw'], sol['entity_id'])).fetchone()
+                if item:
+                    db.execute("UPDATE supplier_order_list_lines SET item_id=? WHERE id=?", (item['id'], line['id']))
+                else:
+                    err = f"Item not found: '{line['item_name_raw']}'"
+            if line['qty_expected'] is None or line['qty_expected'] <= 0:
+                err = "qty_expected must be > 0"
+            if sol.get('supplier_id'):
+                sup = db.execute("SELECT id FROM suppliers WHERE id=?", (sol['supplier_id'],)).fetchone()
+                if not sup:
+                    err = f"Supplier {sol['supplier_id']} not found"
+            if err:
+                error_count += 1
+                db.execute("UPDATE supplier_order_list_lines SET validation_status='error', validation_error=? WHERE id=?",
+                           (err, line['id']))
+            else:
+                db.execute("UPDATE supplier_order_list_lines SET validation_status='valid', validation_error=NULL WHERE id=?",
+                           (line['id'],))
+        new_status = 'validated' if error_count == 0 else 'failed_with_errors'
+        db.execute("UPDATE supplier_order_lists SET status=?, error_count=?, updated_at=datetime('now') WHERE id=?",
+                   (new_status, error_count, sol_id))
+        write_audit(db, sol['entity_id'], user['uid'], 'validate', 'supplier_order_list', sol_id,
+                    {'status': sol['status']}, {'status': new_status, 'error_count': error_count})
+        db.commit()
+    return {'success': True, 'status': new_status, 'error_count': error_count}
+
+
+@app.post("/api/receivings")
+async def create_receiving(request: Request):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'warehouse_operator')
+    body = await request.json()
+    rid = str(uuid.uuid4())
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO receivings (id, entity_id, warehouse_id, supplier_order_list_id, status, received_by, notes) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (rid, body['entity_id'], body['warehouse_id'], body.get('supplier_order_list_id'),
+             'in_progress', user['uid'], body.get('notes'))
+        )
+        # If linked to SOL, update its status to receiving
+        if body.get('supplier_order_list_id'):
+            db.execute("UPDATE supplier_order_lists SET status='receiving', updated_at=datetime('now') WHERE id=?",
+                       (body['supplier_order_list_id'],))
+        write_audit(db, body['entity_id'], user['uid'], 'create', 'receiving', rid, None, body)
+        db.commit()
+    return {'id': rid, 'success': True}
+
+
+@app.post("/api/receivings/{receiving_id}/receive_lot")
+async def receive_lot(request: Request, receiving_id: str):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'warehouse_operator')
+    body = await request.json()
+    with get_db() as db:
+        recv = dict_from_row(db.execute("SELECT * FROM receivings WHERE id=?", (receiving_id,)).fetchone())
+        if not recv:
+            raise HTTPException(status_code=404, detail="Receiving session not found")
+        if recv['status'] != 'in_progress':
+            raise HTTPException(status_code=400, detail="Receiving session is not in progress")
+
+        lot_id = str(uuid.uuid4())
+        tracking_id = body.get('tracking_id') or f"TRK-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{lot_id[:6].upper()}"
+        qty = float(body['qty_original'])
+
+        db.execute(
+            "INSERT INTO inventory_lots (id, entity_id, item_id, tracking_id, lot_no, batch_no, shade_code, width_value, "
+            "qty_original, qty_on_hand, qty_reserved, warehouse_id, location_id, status, qty_confidence, receiving_id, supplier_order_line_id, created_by) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (lot_id, recv['entity_id'], body['item_id'], tracking_id, body.get('lot_no'),
+             body.get('batch_no'), body.get('shade_code'), body.get('width_value'),
+             qty, qty, 0.0, recv['warehouse_id'], body.get('location_id'),
+             'active', body.get('qty_confidence', 'supplier_reported'),
+             receiving_id, body.get('supplier_order_line_id'), user['uid'])
+        )
+
+        # Create inventory movement (receive)
+        mov_id = str(uuid.uuid4())
+        ikey = f"recv-{lot_id}"
+        db.execute(
+            "INSERT INTO inventory_movements (id, event_idempotency_key, movement_type, entity_id, inventory_lot_id, "
+            "tracking_id, qty_delta, qty_before, qty_after, warehouse_to_id, location_to_id, action_by) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (mov_id, ikey, 'receive', recv['entity_id'], lot_id, tracking_id,
+             qty, 0.0, qty, recv['warehouse_id'], body.get('location_id'), user['uid'])
+        )
+
+        # Update supplier_order_line if linked
+        if body.get('supplier_order_line_id'):
+            db.execute(
+                "UPDATE supplier_order_list_lines SET validation_status='valid' WHERE id=?",
+                (body['supplier_order_line_id'],)
+            )
+
+        write_audit(db, recv['entity_id'], user['uid'], 'receive_lot', 'inventory_lot', lot_id,
+                    None, {'tracking_id': tracking_id, 'qty': qty})
+        db.commit()
+    return {'lot_id': lot_id, 'tracking_id': tracking_id, 'success': True}
+
+
+@app.post("/api/receivings/{receiving_id}/complete")
+async def complete_receiving(request: Request, receiving_id: str):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead')
+    with get_db() as db:
+        recv = dict_from_row(db.execute("SELECT * FROM receivings WHERE id=?", (receiving_id,)).fetchone())
+        if not recv:
+            raise HTTPException(status_code=404, detail="Receiving session not found")
+        db.execute("UPDATE receivings SET status='completed' WHERE id=?", (receiving_id,))
+        if recv.get('supplier_order_list_id'):
+            db.execute("UPDATE supplier_order_lists SET status='completed', updated_at=datetime('now') WHERE id=?",
+                       (recv['supplier_order_list_id'],))
+        write_audit(db, recv['entity_id'], user['uid'], 'complete', 'receiving', receiving_id,
+                    {'status': 'in_progress'}, {'status': 'completed'})
+        db.commit()
+    return {'success': True}
+
+
+@app.post("/api/putaway")
+async def putaway_lot(request: Request):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'warehouse_operator')
+    body = await request.json()
+    tracking_id = body.get('tracking_id')
+    location_id = body.get('location_id')
+    if not tracking_id or not location_id:
+        raise HTTPException(status_code=400, detail="tracking_id and location_id required")
+    with get_db() as db:
+        lot = dict_from_row(db.execute("SELECT * FROM inventory_lots WHERE tracking_id=?", (tracking_id,)).fetchone())
+        if not lot:
+            raise HTTPException(status_code=404, detail="Lot not found")
+        loc = dict_from_row(db.execute("SELECT * FROM locations WHERE id=?", (location_id,)).fetchone())
+        if not loc:
+            raise HTTPException(status_code=404, detail="Location not found")
+
+        from_location_id = lot['location_id']
+        pe_id = str(uuid.uuid4())
+        db.execute(
+            "INSERT INTO putaway_events (id, entity_id, inventory_lot_id, from_location_id, to_location_id, qty_moved, moved_by, status) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (pe_id, lot['entity_id'], lot['id'], from_location_id, location_id, lot['qty_on_hand'], user['uid'], 'completed')
+        )
+        db.execute("UPDATE inventory_lots SET location_id=?, updated_at=datetime('now') WHERE id=?",
+                   (location_id, lot['id']))
+
+        mov_id = str(uuid.uuid4())
+        ikey = f"putaway-{pe_id}"
+        db.execute(
+            "INSERT INTO inventory_movements (id, event_idempotency_key, movement_type, entity_id, inventory_lot_id, "
+            "tracking_id, qty_delta, qty_before, qty_after, warehouse_from_id, location_from_id, warehouse_to_id, location_to_id, action_by) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (mov_id, ikey, 'move', lot['entity_id'], lot['id'], tracking_id,
+             0.0, lot['qty_on_hand'], lot['qty_on_hand'],
+             lot['warehouse_id'], from_location_id, lot['warehouse_id'], location_id, user['uid'])
+        )
+        write_audit(db, lot['entity_id'], user['uid'], 'putaway', 'inventory_lot', lot['id'],
+                    {'location_id': from_location_id}, {'location_id': location_id})
+        db.commit()
+    return {'putaway_event_id': pe_id, 'success': True}
+
+
+# ========== OUTBOUND WORKFLOW ==========
+
+@app.post("/api/outbound_batches")
+async def create_outbound_batch(request: Request):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'manager')
+    body = await request.json()
+    batch_id = str(uuid.uuid4())
+    batch_code = body.get('batch_code') or f"ORB-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+    requests_list = body.get('requests', [])
+    total_lines = 0
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO outbound_request_batches (id, entity_id, batch_code, status, total_lines, file_name, created_by) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (batch_id, body['entity_id'], batch_code, 'draft', 0, body.get('file_name'), user['uid'])
+        )
+        for req in requests_list:
+            or_id = str(uuid.uuid4())
+            db.execute(
+                "INSERT INTO outbound_requests (id, batch_id, entity_id, warehouse_id, customer_id, reference_no, status) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (or_id, batch_id, body['entity_id'], req['warehouse_id'], req.get('customer_id'),
+                 req.get('reference_no'), 'pending')
+            )
+            lines = req.get('lines', [])
+            for idx, line in enumerate(lines, 1):
+                line_id = str(uuid.uuid4())
+                db.execute(
+                    "INSERT INTO outbound_request_lines (id, outbound_request_id, entity_id, line_no, item_id, item_name_raw, qty_requested, uom, status) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)",
+                    (line_id, or_id, body['entity_id'], idx, line.get('item_id'), line.get('item_name_raw'),
+                     line['qty'], line.get('uom', 'meter'), 'pending')
+                )
+                total_lines += 1
+        db.execute("UPDATE outbound_request_batches SET total_lines=? WHERE id=?", (total_lines, batch_id))
+        write_audit(db, body['entity_id'], user['uid'], 'create', 'outbound_request_batch', batch_id,
+                    None, {'batch_code': batch_code, 'total_lines': total_lines})
+        db.commit()
+    return {'id': batch_id, 'batch_code': batch_code, 'total_lines': total_lines, 'success': True}
+
+
+@app.post("/api/outbound_batches/{batch_id}/validate")
+async def validate_outbound_batch(request: Request, batch_id: str):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'manager')
+    with get_db() as db:
+        batch = dict_from_row(db.execute("SELECT * FROM outbound_request_batches WHERE id=?", (batch_id,)).fetchone())
+        if not batch:
+            raise HTTPException(status_code=404, detail="Batch not found")
+        lines = rows_to_list(db.execute(
+            "SELECT orl.* FROM outbound_request_lines orl "
+            "JOIN outbound_requests orq ON orl.outbound_request_id = orq.id "
+            "WHERE orq.batch_id=?", (batch_id,)
+        ).fetchall())
+        error_count = 0
+        for line in lines:
+            err = None
+            if not line.get('item_id'):
+                item = db.execute("SELECT id FROM items WHERE name=? AND entity_id=?",
+                                  (line.get('item_name_raw'), batch['entity_id'])).fetchone()
+                if item:
+                    db.execute("UPDATE outbound_request_lines SET item_id=? WHERE id=?", (item['id'], line['id']))
+                else:
+                    err = f"Item not found: '{line.get('item_name_raw')}'"
+                    error_count += 1
+            if not line.get('qty_requested') or float(line.get('qty_requested', 0)) <= 0:
+                err = "qty_requested must be > 0"
+                error_count += 1
+            if err:
+                db.execute("UPDATE outbound_request_lines SET status='blocked' WHERE id=?", (line['id'],))
+        new_status = 'validated' if error_count == 0 else 'failed_with_errors'
+        db.execute("UPDATE outbound_request_batches SET status=?, error_count=?, updated_at=datetime('now') WHERE id=?",
+                   (new_status, error_count, batch_id))
+        write_audit(db, batch['entity_id'], user['uid'], 'validate', 'outbound_request_batch', batch_id,
+                    {'status': batch['status']}, {'status': new_status, 'error_count': error_count})
+        db.commit()
+    return {'success': True, 'status': new_status, 'error_count': error_count}
+
+
+@app.post("/api/outbound/allocate")
+async def allocate_outbound_line(request: Request):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead')
+    body = await request.json()
+    line_id = body['line_id']
+    with get_db() as db:
+        line = dict_from_row(db.execute(
+            "SELECT orl.*, orq.warehouse_id, orq.entity_id as req_entity_id "
+            "FROM outbound_request_lines orl JOIN outbound_requests orq ON orl.outbound_request_id = orq.id "
+            "WHERE orl.id=?", (line_id,)
+        ).fetchone())
+        if not line:
+            raise HTTPException(status_code=404, detail="Line not found")
+        qty_needed = float(line['qty_requested']) - float(line.get('qty_allocated') or 0)
+        if qty_needed <= 0:
+            return {'success': True, 'message': 'Already fully allocated'}
+
+        # FIFO: oldest active lots with available qty for this item in the warehouse
+        lots = rows_to_list(db.execute(
+            "SELECT * FROM inventory_lots WHERE item_id=? AND warehouse_id=? AND status='active' "
+            "AND (qty_on_hand - qty_reserved) > 0 ORDER BY created_at ASC",
+            (line['item_id'], line['warehouse_id'])
+        ).fetchall())
+
+        total_allocated = 0.0
+        reservations_made = []
+        for lot in lots:
+            if qty_needed <= 0:
+                break
+            available = float(lot['qty_on_hand']) - float(lot.get('qty_reserved') or 0)
+            if available <= 0:
+                continue
+            reserve_qty = min(available, qty_needed)
+            res_id = str(uuid.uuid4())
+            db.execute(
+                "INSERT INTO inventory_reservations (id, entity_id, inventory_lot_id, outbound_request_line_id, qty_reserved, status, created_by) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (res_id, line['entity_id'], lot['id'], line_id, reserve_qty, 'active', user['uid'])
+            )
+            db.execute("UPDATE inventory_lots SET qty_reserved = qty_reserved + ?, updated_at=datetime('now') WHERE id=?",
+                       (reserve_qty, lot['id']))
+            total_allocated += reserve_qty
+            qty_needed -= reserve_qty
+            reservations_made.append({'lot_id': lot['id'], 'qty': reserve_qty})
+
+        db.execute(
+            "UPDATE outbound_request_lines SET qty_allocated = qty_allocated + ?, status='allocated', updated_at=datetime('now') WHERE id=?",
+            (total_allocated, line_id)
+        )
+        write_audit(db, line['entity_id'], user['uid'], 'allocate', 'outbound_request_line', line_id,
+                    {'qty_allocated': line.get('qty_allocated', 0)},
+                    {'qty_allocated': float(line.get('qty_allocated', 0)) + total_allocated, 'reservations': reservations_made})
+        db.commit()
+    return {'success': True, 'total_allocated': total_allocated, 'reservations': reservations_made}
+
+
+@app.post("/api/outbound/claim_line")
+async def claim_outbound_line(request: Request):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'warehouse_operator')
+    body = await request.json()
+    line_id = body['line_id']
+    with get_db() as db:
+        line = dict_from_row(db.execute("SELECT * FROM outbound_request_lines WHERE id=?", (line_id,)).fetchone())
+        if not line:
+            raise HTTPException(status_code=404, detail="Line not found")
+        # Check for existing lock
+        lock = db.execute(
+            "SELECT * FROM workflow_locks WHERE resource_type='outbound_request_line' AND resource_id=?", (line_id,)
+        ).fetchone()
+        if lock:
+            raise HTTPException(status_code=409, detail=f"Line already claimed by {lock['lock_owner']}")
+
+        now = datetime.now(timezone.utc)
+        expires_at = (now + timedelta(hours=2)).strftime('%Y-%m-%d %H:%M:%S')
+        lock_id = str(uuid.uuid4())
+        db.execute(
+            "INSERT INTO workflow_locks (id, resource_type, resource_id, lock_owner, lock_expires_at) VALUES (?,?,?,?,?)",
+            (lock_id, 'outbound_request_line', line_id, user['uid'], expires_at)
+        )
+        db.execute(
+            "UPDATE outbound_request_lines SET claimed_by=?, claimed_at=datetime('now'), status='in_progress', updated_at=datetime('now') WHERE id=?",
+            (user['uid'], line_id)
+        )
+        write_audit(db, line['entity_id'], user['uid'], 'claim', 'outbound_request_line', line_id,
+                    {'status': line['status']}, {'status': 'in_progress', 'claimed_by': user['uid']})
+        db.commit()
+    return {'success': True, 'lock_id': lock_id, 'expires_at': expires_at}
+
+
+@app.post("/api/outbound/record_cut")
+async def record_cut(request: Request):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'warehouse_operator')
+    body = await request.json()
+    line_id = body['line_id']
+    lot_id = body['lot_id']
+    qty_requested = float(body['qty_requested'])
+    qty_actual = float(body['qty_actual'])
+    cut_by = body.get('cut_by', user['uid'])
+
+    with get_db() as db:
+        line = dict_from_row(db.execute("SELECT * FROM outbound_request_lines WHERE id=?", (line_id,)).fetchone())
+        if not line:
+            raise HTTPException(status_code=404, detail="Line not found")
+        lot = dict_from_row(db.execute("SELECT * FROM inventory_lots WHERE id=?", (lot_id,)).fetchone())
+        if not lot:
+            raise HTTPException(status_code=404, detail="Lot not found")
+
+        cut_id = str(uuid.uuid4())
+        db.execute(
+            "INSERT INTO cut_transactions (id, entity_id, outbound_request_line_id, inventory_lot_id, tracking_id, "
+            "qty_requested, qty_actual, variance_reason, cut_by, status) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (cut_id, line['entity_id'], line_id, lot_id, lot['tracking_id'],
+             qty_requested, qty_actual, body.get('variance_reason'), cut_by, 'recorded')
+        )
+
+        # Deduct inventory movement
+        qty_before = float(lot['qty_on_hand'])
+        qty_after = round(qty_before - qty_actual, 4)
+        mov_id = str(uuid.uuid4())
+        ikey = f"cut-{cut_id}-deduct"
+        db.execute(
+            "INSERT INTO inventory_movements (id, event_idempotency_key, movement_type, entity_id, inventory_lot_id, "
+            "tracking_id, sales_order_line_id, cut_transaction_id, qty_delta, qty_before, qty_after, "
+            "warehouse_from_id, location_from_id, action_by) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (mov_id, ikey, 'deduct', line['entity_id'], lot_id, lot['tracking_id'],
+             line_id, cut_id, -qty_actual, qty_before, qty_after,
+             lot['warehouse_id'], lot.get('location_id'), cut_by)
+        )
+        db.execute("UPDATE inventory_lots SET qty_on_hand=?, updated_at=datetime('now') WHERE id=?",
+                   (qty_after, lot_id))
+
+        # Auto-generate tag_label and print_job
+        tag_id = str(uuid.uuid4())
+        tag_count = db.execute("SELECT COUNT(*) FROM tag_labels WHERE entity_id=?", (line['entity_id'],)).fetchone()[0]
+        tag_code = f"NXR-TAG-{(tag_count + 1):04d}"
+        db.execute(
+            "INSERT INTO tag_labels (id, tag_code, entity_id, cut_transaction_id, inventory_lot_id, outbound_request_line_id, tag_status) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (tag_id, tag_code, line['entity_id'], cut_id, lot_id, line_id, 'generated')
+        )
+        pj_id = str(uuid.uuid4())
+        db.execute(
+            "INSERT INTO print_jobs (id, entity_id, tag_label_id, job_type, status) VALUES (?,?,?,?,?)",
+            (pj_id, line['entity_id'], tag_id, 'tag', 'queued')
+        )
+
+        # Check variance: if abs variance > 5%, flag for approval
+        variance_pct = abs(qty_actual - qty_requested) / qty_requested if qty_requested > 0 else 0
+        line_needs_approval = variance_pct > 0.05
+        if line_needs_approval:
+            adj_id = str(uuid.uuid4())
+            db.execute(
+                "INSERT INTO adjustment_requests (id, entity_id, inventory_lot_id, outbound_request_line_id, "
+                "adjustment_type, qty_before, qty_after, reason_code, notes, status, requested_by) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (adj_id, line['entity_id'], lot_id, line_id, 'variance_approval',
+                 qty_requested, qty_actual, 'cut_variance',
+                 f"Cut variance {variance_pct*100:.1f}% exceeds 5% threshold", 'pending', cut_by)
+            )
+            db.execute("UPDATE outbound_request_lines SET status='needs_approval', updated_at=datetime('now') WHERE id=?",
+                       (line_id,))
+        else:
+            db.execute("UPDATE outbound_request_lines SET qty_fulfilled=qty_fulfilled+?, status='cut_complete', updated_at=datetime('now') WHERE id=?",
+                       (qty_actual, line_id))
+
+        write_audit(db, line['entity_id'], user['uid'], 'record_cut', 'cut_transaction', cut_id,
+                    None, {'qty_requested': qty_requested, 'qty_actual': qty_actual, 'tag_code': tag_code})
+        db.commit()
+    return {
+        'cut_id': cut_id, 'tag_id': tag_id, 'tag_code': tag_code, 'print_job_id': pj_id,
+        'needs_approval': line_needs_approval, 'success': True
+    }
+
+
+@app.post("/api/outbound/close_line")
+async def close_line(request: Request):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'manager')
+    body = await request.json()
+    line_id = body['line_id']
+    with get_db() as db:
+        line = dict_from_row(db.execute("SELECT * FROM outbound_request_lines WHERE id=?", (line_id,)).fetchone())
+        if not line:
+            raise HTTPException(status_code=404, detail="Line not found")
+        # GATE CHECK: all cut tags must be printed or scanned
+        tags = rows_to_list(db.execute(
+            "SELECT tl.tag_status FROM tag_labels tl WHERE tl.outbound_request_line_id=?", (line_id,)
+        ).fetchall())
+        unprinted = [t for t in tags if t['tag_status'] not in ('printed', 'scanned')]
+        if unprinted:
+            raise HTTPException(status_code=400,
+                detail=f"Gate check failed: {len(unprinted)} tag(s) not yet printed or scanned")
+
+        # Release reservations
+        db.execute(
+            "UPDATE inventory_reservations SET status='released' WHERE outbound_request_line_id=? AND status='active'",
+            (line_id,)
+        )
+        # Release workflow lock
+        db.execute("DELETE FROM workflow_locks WHERE resource_type='outbound_request_line' AND resource_id=?", (line_id,))
+
+        db.execute(
+            "UPDATE outbound_request_lines SET status='closed', fulfilled_by=?, fulfilled_at=datetime('now'), updated_at=datetime('now') WHERE id=?",
+            (user['uid'], line_id)
+        )
+
+        # Create integration event for QBD sync
+        ie_id = str(uuid.uuid4())
+        ikey = f"close-line-{line_id}"
+        payload = json.dumps({'line_id': line_id, 'qty_fulfilled': line.get('qty_fulfilled', 0)})
+        try:
+            db.execute(
+                "INSERT INTO integration_events (id, entity_id, event_type, event_idempotency_key, payload_json, status, direction) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (ie_id, line['entity_id'], 'fulfillment_complete', ikey, payload, 'pending', 'outbound')
+            )
+        except Exception:
+            pass  # Idempotency key already exists
+
+        write_audit(db, line['entity_id'], user['uid'], 'close', 'outbound_request_line', line_id,
+                    {'status': line['status']}, {'status': 'closed'})
+        db.commit()
+    return {'success': True, 'integration_event_id': ie_id}
+
+
+# ========== APPROVALS & RECONCILIATION ==========
+
+@app.post("/api/adjustments")
+async def create_adjustment(request: Request):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'warehouse_operator', 'manager')
+    body = await request.json()
+    adj_id = str(uuid.uuid4())
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO adjustment_requests (id, entity_id, inventory_lot_id, outbound_request_line_id, "
+            "adjustment_type, qty_before, qty_after, reason_code, notes, status, requested_by) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (adj_id, body['entity_id'], body.get('inventory_lot_id'), body.get('outbound_request_line_id'),
+             body['adjustment_type'], body.get('qty_before'), body.get('qty_after'),
+             body['reason_code'], body.get('notes'), 'pending', user['uid'])
+        )
+        write_audit(db, body['entity_id'], user['uid'], 'create', 'adjustment_request', adj_id, None, body)
+        db.commit()
+    return {'id': adj_id, 'success': True}
+
+
+@app.put("/api/adjustments/{adj_id}/approve")
+async def approve_adjustment_v2(request: Request, adj_id: str):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'manager')
+    body = await request.json() if request.headers.get('content-length', '0') != '0' else {}
+    with get_db() as db:
+        adj = dict_from_row(db.execute("SELECT * FROM adjustment_requests WHERE id=?", (adj_id,)).fetchone())
+        if not adj:
+            raise HTTPException(status_code=404, detail="Adjustment not found")
+        if adj['status'] != 'pending':
+            raise HTTPException(status_code=400, detail="Adjustment is not pending")
+        db.execute(
+            "UPDATE adjustment_requests SET status='approved', approved_by=?, approved_at=datetime('now') WHERE id=?",
+            (user['uid'], adj_id)
+        )
+        # If qty_correction, apply movement
+        if adj['adjustment_type'] == 'qty_correction' and adj.get('inventory_lot_id') and adj.get('qty_after') is not None:
+            lot = dict_from_row(db.execute("SELECT * FROM inventory_lots WHERE id=?", (adj['inventory_lot_id'],)).fetchone())
+            if lot:
+                qty_before = float(lot['qty_on_hand'])
+                qty_after = float(adj['qty_after'])
+                delta = qty_after - qty_before
+                mtype = 'adjust_up' if delta >= 0 else 'adjust_down'
+                mov_id = str(uuid.uuid4())
+                ikey = f"adj-{adj_id}-apply"
+                try:
+                    db.execute(
+                        "INSERT INTO inventory_movements (id, event_idempotency_key, movement_type, entity_id, inventory_lot_id, "
+                        "tracking_id, qty_delta, qty_before, qty_after, action_by) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (mov_id, ikey, mtype, lot['entity_id'], lot['id'], lot['tracking_id'],
+                         delta, qty_before, qty_after, user['uid'])
+                    )
+                    db.execute("UPDATE inventory_lots SET qty_on_hand=?, updated_at=datetime('now') WHERE id=?",
+                               (qty_after, adj['inventory_lot_id']))
+                except Exception:
+                    pass
+        write_audit(db, adj['entity_id'], user['uid'], 'approve', 'adjustment_request', adj_id,
+                    {'status': 'pending'}, {'status': 'approved'})
+        db.commit()
+    return {'success': True}
+
+
+@app.put("/api/adjustments/{adj_id}/reject")
+async def reject_adjustment_v2(request: Request, adj_id: str):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'manager')
+    body = {}
     try:
-        with get_db() as db:
-            db.execute("SELECT 1")
-        return {"status": "ok", "service": "nexray", "version": "1.0.0"}
-    except Exception as e:
-        return JSONResponse({"status": "error", "detail": str(e)}, status_code=503)
+        body = await request.json()
+    except Exception:
+        pass
+    with get_db() as db:
+        adj = dict_from_row(db.execute("SELECT * FROM adjustment_requests WHERE id=?", (adj_id,)).fetchone())
+        if not adj:
+            raise HTTPException(status_code=404, detail="Adjustment not found")
+        db.execute(
+            "UPDATE adjustment_requests SET status='rejected', approved_by=?, approved_at=datetime('now') WHERE id=?",
+            (user['uid'], adj_id)
+        )
+        write_audit(db, adj['entity_id'], user['uid'], 'reject', 'adjustment_request', adj_id,
+                    {'status': 'pending'}, {'status': 'rejected', 'notes': body.get('notes')})
+        db.commit()
+    return {'success': True}
+
+
+@app.post("/api/reconciliation/run")
+async def run_reconciliation(request: Request):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'manager')
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    entity_id = body.get('entity_id', user.get('entity_id', 'ent-01'))
+    run_type = body.get('run_type', 'manual')
+
+    with get_db() as db:
+        run_id = str(uuid.uuid4())
+        db.execute(
+            "INSERT INTO reconciliation_runs (id, entity_id, run_type, status, run_by) VALUES (?,?,?,?,?)",
+            (run_id, entity_id, run_type, 'running', user['uid'])
+        )
+        db.commit()
+
+        findings = []
+
+        # 1. Negative balances
+        neg_lots = rows_to_list(db.execute(
+            "SELECT * FROM inventory_lots WHERE entity_id=? AND qty_on_hand < 0 AND status='active'", (entity_id,)
+        ).fetchall())
+        for lot in neg_lots:
+            findings.append(('negative_balance', 'critical',
+                f"Lot {lot['tracking_id']} has negative balance: {lot['qty_on_hand']}", 'inventory_lot', lot['id']))
+
+        # 2. Stuck lines >24h
+        stuck = rows_to_list(db.execute(
+            "SELECT * FROM outbound_request_lines WHERE entity_id=? AND status IN ('needs_approval','in_progress','allocated') "
+            "AND datetime(updated_at) < datetime('now', '-24 hours')", (entity_id,)
+        ).fetchall())
+        for line in stuck:
+            findings.append(('stuck_line', 'warning',
+                f"Line {line['id']} in '{line['status']}' state for >24h", 'outbound_request_line', line['id']))
+
+        # 3. Low remainder lots < 10m
+        low_lots = rows_to_list(db.execute(
+            "SELECT * FROM inventory_lots WHERE entity_id=? AND status='active' AND qty_on_hand < 10 AND qty_on_hand > 0",
+            (entity_id,)
+        ).fetchall())
+        for lot in low_lots:
+            findings.append(('low_remainder', 'warning',
+                f"Lot {lot['tracking_id']} has only {lot['qty_on_hand']}m remaining - below 10m threshold",
+                'inventory_lot', lot['id']))
+
+        # 4. Missing/unprinted tags (cut transactions without printed tags)
+        unprinted = rows_to_list(db.execute(
+            "SELECT ct.id, ct.tracking_id FROM cut_transactions ct "
+            "LEFT JOIN tag_labels tl ON ct.id = tl.cut_transaction_id "
+            "WHERE ct.entity_id=? AND (tl.id IS NULL OR tl.tag_status = 'generated')", (entity_id,)
+        ).fetchall())
+        for ct in unprinted:
+            findings.append(('missing_tag', 'critical',
+                f"Cut transaction {ct['id']} has tag in generated state, not yet printed",
+                'cut_transaction', ct['id']))
+
+        # 5. Pending integration events
+        pending_ie = rows_to_list(db.execute(
+            "SELECT * FROM integration_events WHERE entity_id=? AND status='pending' AND datetime(created_at) < datetime('now', '-1 hour')",
+            (entity_id,)
+        ).fetchall())
+        for ie in pending_ie:
+            findings.append(('unsync_event', 'warning',
+                f"Integration event {ie['id']} ({ie['event_type']}) pending for >1h",
+                'integration_event', ie['id']))
+
+        # Insert findings
+        for ftype, sev, desc, rtype, rid in findings:
+            fid = str(uuid.uuid4())
+            db.execute(
+                "INSERT INTO reconciliation_findings (id, reconciliation_run_id, entity_id, finding_type, severity, description, resource_type, resource_id, resolution_status) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (fid, run_id, entity_id, ftype, sev, desc, rtype, rid, 'open')
+            )
+
+        db.execute(
+            "UPDATE reconciliation_runs SET status='completed', findings_count=?, completed_at=datetime('now') WHERE id=?",
+            (len(findings), run_id)
+        )
+        write_audit(db, entity_id, user['uid'], 'run_reconciliation', 'reconciliation_run', run_id,
+                    None, {'findings_count': len(findings), 'run_type': run_type})
+        db.commit()
+    return {'run_id': run_id, 'findings_count': len(findings), 'success': True}
+
+
+# ========== E-COMMERCE CHANNELS ==========
+
+@app.get("/api/channels")
+async def get_channels(request: Request, entity_id: str = None):
+    user = require_auth(request)
+    with get_db() as db:
+        if entity_id:
+            channels = rows_to_list(db.execute(
+                "SELECT * FROM channel_connections WHERE entity_id=? ORDER BY created_at DESC", (entity_id,)
+            ).fetchall())
+        else:
+            channels = rows_to_list(db.execute(
+                "SELECT * FROM channel_connections ORDER BY created_at DESC"
+            ).fetchall())
+        # Mask encrypted fields
+        for ch in channels:
+            for field in ('api_key_encrypted', 'api_secret_encrypted', 'access_token_encrypted', 'refresh_token_encrypted'):
+                if ch.get(field):
+                    ch[field] = '***'
+    return {'channels': channels}
+
+
+@app.post("/api/channels")
+async def create_channel(request: Request):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'manager')
+    body = await request.json()
+    ch_id = str(uuid.uuid4())
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO channel_connections (id, entity_id, channel_type, shop_name, api_key_encrypted, api_secret_encrypted, "
+            "access_token_encrypted, refresh_token_encrypted, shop_url, region, is_active) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (ch_id, body['entity_id'], body['channel_type'], body.get('shop_name'),
+             body.get('api_key'), body.get('api_secret'), body.get('access_token'), body.get('refresh_token'),
+             body.get('shop_url'), body.get('region'), body.get('is_active', 1))
+        )
+        write_audit(db, body['entity_id'], user['uid'], 'create', 'channel_connection', ch_id,
+                    None, {k: v for k, v in body.items() if 'key' not in k.lower() and 'secret' not in k.lower() and 'token' not in k.lower()})
+        db.commit()
+    return {'id': ch_id, 'success': True}
+
+
+@app.put("/api/channels/{channel_id}")
+async def update_channel(request: Request, channel_id: str):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'manager')
+    body = await request.json()
+    with get_db() as db:
+        before = dict_from_row(db.execute("SELECT * FROM channel_connections WHERE id=?", (channel_id,)).fetchone())
+        if not before:
+            raise HTTPException(status_code=404, detail="Channel not found")
+        fields = {k: v for k, v in body.items() if k in (
+            'shop_name', 'api_key_encrypted', 'api_secret_encrypted', 'access_token_encrypted',
+            'refresh_token_encrypted', 'shop_url', 'region', 'is_active'
+        )}
+        # Map convenience names
+        if 'api_key' in body: fields['api_key_encrypted'] = body['api_key']
+        if 'api_secret' in body: fields['api_secret_encrypted'] = body['api_secret']
+        if 'access_token' in body: fields['access_token_encrypted'] = body['access_token']
+        if 'refresh_token' in body: fields['refresh_token_encrypted'] = body['refresh_token']
+        if fields:
+            fields['updated_at'] = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+            set_clause = ", ".join(f"{k}=?" for k in fields)
+            db.execute(f"UPDATE channel_connections SET {set_clause} WHERE id=?", list(fields.values()) + [channel_id])
+        write_audit(db, before['entity_id'], user['uid'], 'update', 'channel_connection', channel_id,
+                    None, {k: '***' if 'key' in k or 'secret' in k or 'token' in k else v for k, v in fields.items()})
+        db.commit()
+    return {'success': True}
+
+
+@app.delete("/api/channels/{channel_id}")
+async def deactivate_channel(request: Request, channel_id: str):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'manager')
+    with get_db() as db:
+        before = dict_from_row(db.execute("SELECT * FROM channel_connections WHERE id=?", (channel_id,)).fetchone())
+        if not before:
+            raise HTTPException(status_code=404, detail="Channel not found")
+        db.execute("UPDATE channel_connections SET is_active=0, updated_at=datetime('now') WHERE id=?", (channel_id,))
+        write_audit(db, before['entity_id'], user['uid'], 'deactivate', 'channel_connection', channel_id,
+                    {'is_active': 1}, {'is_active': 0})
+        db.commit()
+    return {'success': True}
+
+
+@app.post("/api/channels/{channel_id}/sync_orders")
+async def sync_channel_orders(request: Request, channel_id: str):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'manager')
+    with get_db() as db:
+        ch = dict_from_row(db.execute("SELECT * FROM channel_connections WHERE id=?", (channel_id,)).fetchone())
+        if not ch:
+            raise HTTPException(status_code=404, detail="Channel not found")
+        if not ch.get('is_active'):
+            raise HTTPException(status_code=400, detail="Channel is not active")
+
+        # STUB: Simulate pulling orders
+        stub_orders = [
+            {"channel_order_id": f"STUB-{channel_id[:4]}-{i:03d}", "channel_status": "paid", "items": []}
+            for i in range(1, 4)
+        ]
+        synced = 0
+        for order in stub_orders:
+            mapping_id = str(uuid.uuid4())
+            try:
+                db.execute(
+                    "INSERT INTO channel_order_mappings (id, channel_connection_id, channel_order_id, channel_status, sync_status, raw_order_json) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (mapping_id, channel_id, order['channel_order_id'], order['channel_status'],
+                     'synced', json.dumps(order))
+                )
+                synced += 1
+            except Exception:
+                pass
+
+        db.execute("UPDATE channel_connections SET last_sync_at=datetime('now'), updated_at=datetime('now') WHERE id=?",
+                   (channel_id,))
+        write_audit(db, ch['entity_id'], user['uid'], 'sync_orders', 'channel_connection', channel_id,
+                    None, {'synced_count': synced, 'stub': True})
+        db.commit()
+    return {'success': True, 'stub': True, 'synced_orders': synced,
+            'message': f"Stub sync: {synced} orders simulated for {ch['channel_type']} channel '{ch['shop_name']}'"}
+
+
+@app.post("/api/channels/{channel_id}/push_inventory")
+async def push_channel_inventory(request: Request, channel_id: str):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'manager')
+    with get_db() as db:
+        ch = dict_from_row(db.execute("SELECT * FROM channel_connections WHERE id=?", (channel_id,)).fetchone())
+        if not ch:
+            raise HTTPException(status_code=404, detail="Channel not found")
+
+        # STUB: Simulate pushing inventory levels
+        mappings = rows_to_list(db.execute(
+            "SELECT cpm.*, i.sku, "
+            "COALESCE(SUM(il.qty_on_hand - COALESCE(il.qty_reserved,0)),0) as available_qty "
+            "FROM channel_product_mappings cpm "
+            "JOIN items i ON cpm.nexray_item_id = i.id "
+            "LEFT JOIN inventory_lots il ON il.item_id = i.id AND il.status='active' "
+            "WHERE cpm.channel_connection_id=? AND cpm.is_active=1 GROUP BY cpm.id",
+            (channel_id,)
+        ).fetchall())
+
+        pushed = []
+        for m in mappings:
+            pushed.append({
+                'channel_sku': m['channel_sku'],
+                'nexray_sku': m['sku'],
+                'available_qty': round(m['available_qty'], 2),
+                'push_status': 'stub_success'
+            })
+
+        db.execute("UPDATE channel_connections SET last_sync_at=datetime('now'), updated_at=datetime('now') WHERE id=?",
+                   (channel_id,))
+        write_audit(db, ch['entity_id'], user['uid'], 'push_inventory', 'channel_connection', channel_id,
+                    None, {'pushed_count': len(pushed), 'stub': True})
+        db.commit()
+    return {'success': True, 'stub': True, 'pushed_items': pushed,
+            'message': f"Stub push: {len(pushed)} items simulated for {ch['channel_type']} channel '{ch['shop_name']}'"}
+
+
+@app.get("/api/channel_mappings")
+async def get_channel_mappings(request: Request, channel_id: str = None):
+    user = require_auth(request)
+    with get_db() as db:
+        if channel_id:
+            mappings = rows_to_list(db.execute(
+                "SELECT cpm.*, i.sku, i.name as item_name, cc.channel_type, cc.shop_name "
+                "FROM channel_product_mappings cpm "
+                "JOIN items i ON cpm.nexray_item_id = i.id "
+                "JOIN channel_connections cc ON cpm.channel_connection_id = cc.id "
+                "WHERE cpm.channel_connection_id=? ORDER BY cpm.created_at DESC", (channel_id,)
+            ).fetchall())
+        else:
+            mappings = rows_to_list(db.execute(
+                "SELECT cpm.*, i.sku, i.name as item_name, cc.channel_type, cc.shop_name "
+                "FROM channel_product_mappings cpm "
+                "JOIN items i ON cpm.nexray_item_id = i.id "
+                "JOIN channel_connections cc ON cpm.channel_connection_id = cc.id "
+                "ORDER BY cpm.created_at DESC"
+            ).fetchall())
+    return {'mappings': mappings}
+
+
+@app.post("/api/channel_mappings")
+async def create_channel_mapping(request: Request):
+    user = require_auth(request)
+    require_role(user, 'system_admin', 'inventory_admin', 'manager')
+    body = await request.json()
+    cpm_id = str(uuid.uuid4())
+    with get_db() as db:
+        ch = dict_from_row(db.execute("SELECT entity_id FROM channel_connections WHERE id=?",
+                                       (body['channel_connection_id'],)).fetchone())
+        db.execute(
+            "INSERT INTO channel_product_mappings (id, channel_connection_id, channel_product_id, channel_sku, nexray_item_id, is_active) "
+            "VALUES (?,?,?,?,?,?)",
+            (cpm_id, body['channel_connection_id'], body.get('channel_product_id'), body.get('channel_sku'),
+             body['nexray_item_id'], body.get('is_active', 1))
+        )
+        write_audit(db, ch['entity_id'] if ch else None, user['uid'], 'create', 'channel_product_mapping', cpm_id, None, body)
+        db.commit()
+    return {'id': cpm_id, 'success': True}
+
 
 
 # ===== SERVE STATIC FILES + SPA FALLBACK =====
-app.mount("/static", StaticFiles(directory="static"), name="static")
+static_dir = "static"
+if os.path.isdir(static_dir):
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 @app.get("/")
 async def serve_index():
@@ -974,7 +2438,9 @@ async def catch_all(path: str):
         if mime_type is None:
             mime_type = "application/octet-stream"
         return FileResponse(file_path, media_type=mime_type)
-    return FileResponse("static/index.html", media_type="text/html")
+    if os.path.isfile("static/index.html"):
+        return FileResponse("static/index.html", media_type="text/html")
+    return JSONResponse({"detail": "Not Found"}, status_code=404)
 
 
 # ===== STARTUP =====
