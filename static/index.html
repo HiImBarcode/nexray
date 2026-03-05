@@ -3,153 +3,272 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>NEXRAY – Operations Dashboard</title>
+<title>NEXRAY — Operations Platform</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="./base.css">
 <link rel="stylesheet" href="./style.css">
 </head>
 <body>
 
-<div class="app">
-
-  <!-- SIDEBAR -->
-  <aside class="sidebar" id="sidebar">
-    <div class="sidebar-logo">
-      <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-        <rect width="28" height="28" rx="6" fill="#0f6e73"/>
-        <path d="M7 9h14M7 14h9M7 19h12" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+<!-- ===== LOGIN SCREEN ===== -->
+<div class="login-screen" id="loginScreen">
+  <div class="login-card">
+    <div class="login-logo">
+      <svg width="36" height="36" viewBox="0 0 32 32" fill="none" aria-label="NEXRAY Logo">
+        <rect x="2" y="2" width="28" height="28" rx="6" stroke="currentColor" stroke-width="2.5"/>
+        <path d="M9 23V9l7 14L23 9v14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
       </svg>
       <h1>NEXRAY</h1>
     </div>
-
-    <nav class="sidebar-nav">
-
-      <div class="nav-section">
-        <span class="nav-section-label">Overview</span>
-        <button class="nav-item active" data-page="dashboard" onclick="navigate('dashboard')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
-          Dashboard
-        </button>
+    <p class="login-tagline">Operations Platform</p>
+    <form class="login-form" id="loginForm" onsubmit="handleLogin(event)">
+      <div class="form-group">
+        <label class="form-label" for="loginUsername">Username</label>
+        <input type="text" id="loginUsername" class="form-input" placeholder="admin" autocomplete="username" required>
       </div>
-
-      <div class="nav-section">
-        <span class="nav-section-label">OMS</span>
-        <button class="nav-item" data-page="outbound" onclick="navigate('outbound')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-          Outbound Queue
-          <span class="nav-badge" id="nav-pending-badge" style="display:none"></span>
-        </button>
+      <div class="form-group">
+        <label class="form-label" for="loginPassword">Password</label>
+        <input type="password" id="loginPassword" class="form-input" placeholder="••••••••" autocomplete="current-password" required>
       </div>
-
-      <div class="nav-section">
-        <span class="nav-section-label">Execution</span>
-        <button class="nav-item" data-page="cuts" onclick="navigate('cuts')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6-6 6 6M6 15l6 6 6-6"/></svg>
-          Cuts
-        </button>
-        <button class="nav-item" data-page="tags" onclick="navigate('tags')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><circle cx="7" cy="7" r="1.5" fill="currentColor"/></svg>
-          Tags & Labels
-        </button>
-      </div>
-
-      <div class="nav-section">
-        <span class="nav-section-label">WMS</span>
-        <button class="nav-item" data-page="inventory" onclick="navigate('inventory')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
-          Lots & Rolls
-        </button>
-        <button class="nav-item" data-page="warehouses" onclick="navigate('warehouses')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-          Warehouses
-        </button>
-        <button class="nav-item" data-page="movements" onclick="navigate('movements')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
-          Movement Ledger
-        </button>
-      </div>
-
-      <div class="nav-section">
-        <span class="nav-section-label">Controls</span>
-        <button class="nav-item" data-page="adjustments" onclick="navigate('adjustments')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-          Approvals
-          <span class="nav-badge" id="nav-approval-badge" style="display:none"></span>
-        </button>
-        <button class="nav-item" data-page="findings" onclick="navigate('findings')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-          Findings
-          <span class="nav-badge" id="nav-findings-badge" style="display:none"></span>
-        </button>
-      </div>
-
-      <div class="nav-section">
-        <span class="nav-section-label">System</span>
-        <button class="nav-item" data-page="integrations" onclick="navigate('integrations')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-          Integrations
-        </button>
-        <button class="nav-item" data-page="users" onclick="navigate('users')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-          Users & RBAC
-        </button>
-        <button class="nav-item" data-page="audit" onclick="navigate('audit')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-          Audit Log
-        </button>
-      </div>
-
-    </nav>
-
-    <div class="sidebar-footer">
-      <div class="user-avatar">OP</div>
-      <div class="user-info">
-        <div class="user-name">Operator</div>
-        <div class="user-role">warehouse_manager</div>
-      </div>
-    </div>
-  </aside>
-
-  <!-- HEADER -->
-  <header class="header">
-    <div class="header-left">
-      <button class="mobile-toggle btn btn-ghost" onclick="toggleSidebar()">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-      </button>
-      <div>
-        <h2 id="page-title">Dashboard</h2>
-        <div class="header-breadcrumb" id="page-breadcrumb">NEXRAY › Operations</div>
-      </div>
-    </div>
-    <div class="header-right">
-      <select class="entity-select" onchange="switchEntity(this.value)">
-        <option value="ent-01">Entity 01</option>
-        <option value="ent-02">Entity 02</option>
-      </select>
-      <button class="theme-toggle btn btn-ghost" data-theme-toggle aria-label="Toggle theme"></button>
-    </div>
-  </header>
-
-  <!-- MAIN -->
-  <main class="main">
-    <section class="page-section active" id="page-dashboard"></section>
-    <section class="page-section" id="page-outbound"></section>
-    <section class="page-section" id="page-cuts"></section>
-    <section class="page-section" id="page-tags"></section>
-    <section class="page-section" id="page-inventory"></section>
-    <section class="page-section" id="page-warehouses"></section>
-    <section class="page-section" id="page-movements"></section>
-    <section class="page-section" id="page-adjustments"></section>
-    <section class="page-section" id="page-findings"></section>
-    <section class="page-section" id="page-integrations"></section>
-    <section class="page-section" id="page-users"></section>
-    <section class="page-section" id="page-audit"></section>
-
-  </main>
+      <div class="login-error" id="loginError"></div>
+      <button type="submit" class="btn btn-primary login-btn" id="loginBtn">Sign In</button>
+    </form>
+    <div class="login-hint">Demo credentials: <span class="mono">admin</span> / <span class="mono">admin</span></div>
+  </div>
 </div>
 
+<div class="app" id="appContainer" style="display:none">
+
+<!-- Mobile overlay -->
 <div class="mobile-overlay" id="mobileOverlay" onclick="toggleSidebar()"></div>
+
+<!-- ===== SIDEBAR ===== -->
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-logo">
+    <svg width="28" height="28" viewBox="0 0 32 32" fill="none" aria-label="NEXRAY Logo">
+      <rect x="2" y="2" width="28" height="28" rx="6" stroke="currentColor" stroke-width="2.5"/>
+      <path d="M9 23V9l7 14L23 9v14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <h1>NEXRAY</h1>
+  </div>
+
+  <nav class="sidebar-nav">
+    <div class="nav-section">
+      <div class="nav-section-label">Operations</div>
+      <button class="nav-item active" data-page="dashboard" onclick="navigate('dashboard')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        Dashboard
+      </button>
+      <button class="nav-item" data-page="outbound" onclick="navigate('outbound')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12l7-7 7 7"/></svg>
+        Outbound Queue
+        <span class="nav-badge" id="nav-pending-badge"></span>
+      </button>
+      <button class="nav-item" data-page="cuts" onclick="navigate('cuts')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></svg>
+        Cut Transactions
+      </button>
+      <button class="nav-item" data-page="tags" onclick="navigate('tags')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+        Tags &amp; Labels
+      </button>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-section-label">OMS</div>
+      <button class="nav-item" data-page="inbound" onclick="navigate('inbound')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5M5 12l7 7 7-7"/></svg>
+        Inbound
+      </button>
+      <button class="nav-item" data-page="receiving" onclick="navigate('receiving')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 7H4a2 2 0 00-2 2v6a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
+        Receiving
+      </button>
+      <button class="nav-item" data-page="channels" onclick="navigate('channels')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 010 8.49m-8.48-.01a6 6 0 010-8.49m11.31-2.82a10 10 0 010 14.14m-14.14 0a10 10 0 010-14.14"/></svg>
+        Channels
+      </button>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-section-label">WMS</div>
+      <button class="nav-item" data-page="inventory" onclick="navigate('inventory')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+        Lots &amp; Rolls
+      </button>
+      <button class="nav-item" data-page="warehouses" onclick="navigate('warehouses')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+        Warehouses
+      </button>
+      <button class="nav-item" data-page="movements" onclick="navigate('movements')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        Movement Ledger
+      </button>
+      <button class="nav-item" data-page="putaway" onclick="navigate('putaway')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>
+        Putaway
+      </button>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-section-label">Controls</div>
+      <button class="nav-item" data-page="adjustments" onclick="navigate('adjustments')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+        Approvals
+        <span class="nav-badge" id="nav-approval-badge"></span>
+      </button>
+      <button class="nav-item" data-page="findings" onclick="navigate('findings')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        Findings
+        <span class="nav-badge" id="nav-findings-badge"></span>
+      </button>
+      <button class="nav-item" data-page="integrations" onclick="navigate('integrations')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+        Integrations
+      </button>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-section-label">System</div>
+      <button class="nav-item" data-page="items" onclick="navigate('items')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></svg>
+        Items
+      </button>
+      <button class="nav-item" data-page="suppliers" onclick="navigate('suppliers')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13"/><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>
+        Suppliers
+      </button>
+      <button class="nav-item" data-page="customers" onclick="navigate('customers')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+        Customers
+      </button>
+      <button class="nav-item" data-page="users" onclick="navigate('users')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+        Users &amp; RBAC
+      </button>
+      <button class="nav-item" data-page="audit" onclick="navigate('audit')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+        Audit Log
+      </button>
+    </div>
+  </nav>
+
+  <div class="sidebar-footer">
+    <div class="user-avatar" id="sidebarAvatar">SA</div>
+    <div class="user-info">
+      <div class="user-name" id="sidebarUserName">System Admin</div>
+      <div class="user-role" id="sidebarUserRole">system_admin</div>
+    </div>
+    <button class="btn btn-ghost btn-sm sidebar-logout" id="logoutBtn" onclick="handleLogout()" title="Sign out">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+    </button>
+  </div>
+</aside>
+
+<!-- ===== HEADER ===== -->
+<header class="header">
+  <div class="header-left">
+    <button class="mobile-toggle" onclick="toggleSidebar()">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+    </button>
+    <div>
+      <h2 id="page-title">Dashboard</h2>
+      <div class="header-breadcrumb" id="page-breadcrumb">NEXRAY &rsaquo; Operations</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <select class="entity-select" id="entitySelect" onchange="switchEntity(this.value)">
+      <option value="ent-01">Premium Projects</option>
+      <option value="ent-02">B2B Wholesale</option>
+      <option value="ent-03">DTC E-Commerce</option>
+    </select>
+    <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+    </button>
+  </div>
+</header>
+
+<!-- ===== MAIN CONTENT ===== -->
+<main class="main" id="mainContent">
+
+  <!-- DASHBOARD -->
+  <section class="page-section active" id="page-dashboard"></section>
+
+  <!-- OUTBOUND QUEUE -->
+  <section class="page-section" id="page-outbound"></section>
+
+  <!-- CUT TRANSACTIONS -->
+  <section class="page-section" id="page-cuts"></section>
+
+  <!-- TAGS & LABELS -->
+  <section class="page-section" id="page-tags"></section>
+
+  <!-- INBOUND -->
+  <section class="page-section" id="page-inbound"></section>
+
+  <!-- RECEIVING -->
+  <section class="page-section" id="page-receiving"></section>
+
+  <!-- CHANNELS -->
+  <section class="page-section" id="page-channels"></section>
+
+  <!-- INVENTORY -->
+  <section class="page-section" id="page-inventory"></section>
+
+  <!-- WAREHOUSES -->
+  <section class="page-section" id="page-warehouses"></section>
+
+  <!-- MOVEMENT LEDGER -->
+  <section class="page-section" id="page-movements"></section>
+
+  <!-- PUTAWAY -->
+  <section class="page-section" id="page-putaway"></section>
+
+  <!-- ADJUSTMENTS -->
+  <section class="page-section" id="page-adjustments"></section>
+
+  <!-- FINDINGS -->
+  <section class="page-section" id="page-findings"></section>
+
+  <!-- INTEGRATIONS -->
+  <section class="page-section" id="page-integrations"></section>
+
+  <!-- ITEMS -->
+  <section class="page-section" id="page-items"></section>
+
+  <!-- SUPPLIERS -->
+  <section class="page-section" id="page-suppliers"></section>
+
+  <!-- CUSTOMERS -->
+  <section class="page-section" id="page-customers"></section>
+
+  <!-- USERS -->
+  <section class="page-section" id="page-users"></section>
+
+  <!-- AUDIT LOG -->
+  <section class="page-section" id="page-audit"></section>
+
+</main>
+</div>
+
+<!-- ===== MODAL CONTAINER ===== -->
+<div class="modal-overlay" id="modalOverlay" onclick="closeModal()">
+  <div class="modal" id="modalContainer" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h3 class="modal-title" id="modalTitle">Modal</h3>
+      <button class="modal-close" onclick="closeModal()">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+    <div class="modal-footer" id="modalFooter"></div>
+  </div>
+</div>
+
+<!-- ===== TOAST NOTIFICATIONS ===== -->
+<div class="toast-container" id="toastContainer"></div>
 
 <script src="./app.js"></script>
 </body>
