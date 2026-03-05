@@ -222,526 +222,277 @@ async function loadDashboard() {
   `;
 }
 
-// ===== OUTBOUND QUEUE =====
+// ===== OUTBOUND =====
 async function loadOutbound() {
   const el = document.getElementById('page-outbound');
-  el.innerHTML = '<div class="loading-skeleton skeleton-row"></div>'.repeat(5);
-  const data = await api('/outbound');
-  if (!data) return;
-  const lines = data.lines;
-  const statuses = ['all','pending','allocated','in_progress','cut_complete','tagged','closed','needs_approval','cancelled'];
-
+  el.innerHTML = skeletonTable(10);
+  const data = await api('/outbound_lines');
+  if (!data?.lines?.length) { el.innerHTML = emptyState('No outbound lines'); return; }
   el.innerHTML = `
-    <div class="tab-bar">
-      ${statuses.map(s => `<button class="tab-btn ${s === 'all' ? 'active' : ''}" onclick="filterOutbound('${s}', this)">${s === 'all' ? 'All' : s.replace(/_/g,' ')}</button>`).join('')}
-    </div>
     <div class="card">
-      <div class="card-header">
-        <div><div class="card-title">Outbound Request Lines</div><div class="card-subtitle">${lines.length} total lines</div></div>
-      </div>
-      <div class="table-wrapper">
-        <table>
-          <thead><tr><th>Line</th><th>Ref</th><th>Item</th><th>SKU</th><th>Requested</th><th>Allocated</th><th>Fulfilled</th><th>Variance</th><th>Status</th><th>Claimed By</th><th>Actions</th></tr></thead>
-          <tbody id="outbound-tbody">
-            ${lines.map(l => outboundRow(l)).join('')}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  `;
+      <div class="card-header"><div class="card-title">Outbound Queue</div><div class="card-subtitle">${data.lines.length} lines</div></div>
+      <div class="table-wrapper"><table>
+        <thead><tr><th>SO #</th><th>Customer</th><th>Item</th><th>Ordered</th><th>Allocated</th><th>Status</th><th>Priority</th><th>Ship By</th></tr></thead>
+        <tbody>${data.lines.map(l => `<tr>
+          <td>${trackingId(l.so_number)}</td>
+          <td>${l.customer_name || '—'}</td>
+          <td>${l.item_name || '—'}</td>
+          <td>${fmtQty(l.qty_ordered)}m</td>
+          <td>${fmtQty(l.qty_allocated)}m</td>
+          <td>${badge(l.status)}</td>
+          <td>${badge(l.priority)}</td>
+          <td>${fmtDate(l.ship_by_date)}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+    </div>`;
 }
 
-function outboundRow(l) {
-  const varClass = l.qty_variance < 0 ? 'qty-negative' : l.qty_variance > 0 ? 'qty-positive' : '';
-  return `<tr data-status="${l.status}">
-    <td>${mono('#' + l.line_no)}</td>
-    <td>${l.reference_no || '—'}</td>
-    <td>${l.item_name || '—'}</td>
-    <td>${mono(l.sku)}</td>
-    <td>${fmtQty(l.qty_requested)}</td>
-    <td>${fmtQty(l.qty_allocated)}</td>
-    <td>${fmtQty(l.qty_fulfilled)}</td>
-    <td><span class="${varClass}">${l.qty_variance !== 0 ? (l.qty_variance > 0 ? '+' : '') + Number(l.qty_variance).toFixed(2) : '0.00'}</span></td>
-    <td>${badge(l.status)}</td>
-    <td>${mono(l.claimed_by || '—')}</td>
-    <td>
-      ${l.status === 'pending' ? `<button class="btn btn-sm btn-primary" onclick="updateLineStatus('${l.id}','allocated')">Allocate</button>` : ''}
-      ${l.status === 'allocated' ? `<button class="btn btn-sm btn-primary" onclick="updateLineStatus('${l.id}','in_progress')">Start</button>` : ''}
-      ${l.status === 'tagged' ? `<button class="btn btn-sm btn-success" onclick="updateLineStatus('${l.id}','closed')">Close</button>` : ''}
-    </td>
-  </tr>`;
-}
-
-function filterOutbound(status, btn) {
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  document.querySelectorAll('#outbound-tbody tr').forEach(tr => {
-    tr.style.display = (status === 'all' || tr.dataset.status === status) ? '' : 'none';
-  });
-}
-
-async function updateLineStatus(id, status) {
-  await apiPost('/update_line_status', { id, status });
-  loadOutbound();
-}
-
-// ===== CUT TRANSACTIONS =====
+// ===== CUTS =====
 async function loadCuts() {
   const el = document.getElementById('page-cuts');
-  el.innerHTML = '<div class="loading-skeleton skeleton-row"></div>'.repeat(5);
+  el.innerHTML = skeletonTable(10);
   const data = await api('/cuts');
-  if (!data) return;
-
+  if (!data?.cuts?.length) { el.innerHTML = emptyState('No cut transactions'); return; }
   el.innerHTML = `
     <div class="card">
-      <div class="card-header">
-        <div><div class="card-title">Cut Transactions</div><div class="card-subtitle">Roll-level issuance records</div></div>
-      </div>
-      <div class="table-wrapper">
-        <table>
-          <thead><tr><th>ID</th><th>Item</th><th>Tracking ID</th><th>Lot</th><th>Requested</th><th>Actual</th><th>Variance</th><th>Status</th><th>Reason</th><th>Cut By</th><th>Time</th></tr></thead>
-          <tbody>
-            ${data.cuts.map(c => `<tr>
-              <td>${mono(c.id.substring(0,8))}</td>
-              <td>${c.item_name || '—'}</td>
-              <td>${trackingId(c.tracking_id)}</td>
-              <td>${mono(c.lot_no)}</td>
-              <td>${fmtQty(c.qty_requested)}</td>
-              <td>${fmtQty(c.qty_actual)}</td>
-              <td>${qtyDelta(c.qty_variance)}</td>
-              <td>${badge(c.status)}</td>
-              <td style="max-width:200px;font-size:11px">${c.variance_reason || '—'}</td>
-              <td>${mono(c.cut_by)}</td>
-              <td>${fmtDate(c.cut_at)}</td>
-            </tr>`).join('')}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  `;
+      <div class="card-header"><div class="card-title">Cut Transactions</div><div class="card-subtitle">${data.cuts.length} cuts</div></div>
+      <div class="table-wrapper"><table>
+        <thead><tr><th>Cut ID</th><th>Item</th><th>Lot</th><th>SO #</th><th>Qty Cut</th><th>Status</th><th>Cut By</th><th>Time</th></tr></thead>
+        <tbody>${data.cuts.map(c => `<tr>
+          <td>${trackingId(c.cut_id)}</td>
+          <td>${c.item_name || '—'}</td>
+          <td>${mono(c.lot_tracking)}</td>
+          <td>${trackingId(c.so_number)}</td>
+          <td>${fmtQty(c.qty_cut)}m</td>
+          <td>${badge(c.status)}</td>
+          <td>${mono(c.cut_by)}</td>
+          <td>${fmtDate(c.cut_at)}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+    </div>`;
 }
 
-// ===== TAGS & LABELS =====
+// ===== TAGS =====
 async function loadTags() {
   const el = document.getElementById('page-tags');
-  el.innerHTML = '<div class="loading-skeleton skeleton-row"></div>'.repeat(5);
+  el.innerHTML = skeletonTable(10);
   const data = await api('/tags');
-  if (!data) return;
-
+  if (!data?.tags?.length) { el.innerHTML = emptyState('No tags found'); return; }
   el.innerHTML = `
     <div class="card">
-      <div class="card-header">
-        <div><div class="card-title">Tag Labels</div><div class="card-subtitle">Print and scan tracking for execution evidence</div></div>
-      </div>
-      <div class="table-wrapper">
-        <table>
-          <thead><tr><th>Tag Code</th><th>Item</th><th>Tracking ID</th><th>Cut Qty</th><th>Status</th><th>Printed</th><th>Scanned</th><th>Created</th></tr></thead>
-          <tbody>
-            ${data.tags.map(t => `<tr>
-              <td>${trackingId(t.tag_code)}</td>
-              <td>${t.item_name || '—'}</td>
-              <td>${trackingId(t.lot_tracking)}</td>
-              <td>${fmtQty(t.cut_qty)}</td>
-              <td>${badge(t.tag_status)}</td>
-              <td>${t.printed_at ? fmtDate(t.printed_at) : '—'}</td>
-              <td>${t.scanned_at ? fmtDate(t.scanned_at) : '—'}</td>
-              <td>${fmtDate(t.created_at)}</td>
-            </tr>`).join('')}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  `;
+      <div class="card-header"><div class="card-title">Tags & Labels</div><div class="card-subtitle">${data.tags.length} tags</div></div>
+      <div class="table-wrapper"><table>
+        <thead><tr><th>Tag ID</th><th>Type</th><th>Lot</th><th>Item</th><th>Status</th><th>Printed By</th><th>Printed At</th></tr></thead>
+        <tbody>${data.tags.map(t => `<tr>
+          <td>${trackingId(t.tag_id)}</td>
+          <td>${badge(t.tag_type)}</td>
+          <td>${mono(t.lot_tracking)}</td>
+          <td>${t.item_name || '—'}</td>
+          <td>${badge(t.status)}</td>
+          <td>${mono(t.printed_by)}</td>
+          <td>${fmtDate(t.printed_at)}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+    </div>`;
 }
 
 // ===== INVENTORY =====
 async function loadInventory() {
   const el = document.getElementById('page-inventory');
-  el.innerHTML = '<div class="loading-skeleton skeleton-row"></div>'.repeat(5);
+  el.innerHTML = skeletonTable(10);
   const data = await api('/inventory');
-  if (!data) return;
-
+  if (!data?.lots?.length) { el.innerHTML = emptyState('No inventory'); return; }
   el.innerHTML = `
-    <div class="kpi-grid">
-      <div class="kpi-card accent"><div class="kpi-label">Active Lots</div><div class="kpi-value">${data.lots.length}</div></div>
-      <div class="kpi-card"><div class="kpi-label">Total On Hand</div><div class="kpi-value">${fmtQty(data.lots.reduce((s,l) => s + (l.qty_on_hand||0), 0))}m</div></div>
-      <div class="kpi-card"><div class="kpi-label">Total Reserved</div><div class="kpi-value">${fmtQty(data.lots.reduce((s,l) => s + (l.qty_reserved||0), 0))}m</div></div>
-      <div class="kpi-card success"><div class="kpi-label">Total Available</div><div class="kpi-value">${fmtQty(data.lots.reduce((s,l) => s + (l.qty_available||0), 0))}m</div></div>
-    </div>
     <div class="card">
-      <div class="card-header">
-        <div><div class="card-title">Inventory Lots</div><div class="card-subtitle">Roll and lot-level inventory tracking</div></div>
-      </div>
-      <div class="table-wrapper">
-        <table>
-          <thead><tr><th>Tracking ID</th><th>Item</th><th>SKU</th><th>Type</th><th>Lot/Shade</th><th>Original</th><th>On Hand</th><th>Reserved</th><th>Available</th><th>Warehouse</th><th>Location</th><th>Status</th><th>Confidence</th></tr></thead>
-          <tbody>
-            ${data.lots.map(l => {
-              const lowStock = l.qty_on_hand < 10 && l.status === 'active';
-              return `<tr ${lowStock ? 'style="background:var(--color-warning-subtle)"' : ''}>
-                <td>${trackingId(l.tracking_id)}</td>
-                <td>${l.item_name || '—'}</td>
-                <td>${mono(l.sku)}</td>
-                <td>${badge(l.item_type)}</td>
-                <td>${mono((l.lot_no || '') + (l.shade_code ? ' / ' + l.shade_code : ''))}</td>
-                <td>${fmtQty(l.qty_original)}</td>
-                <td style="font-weight:600">${fmtQty(l.qty_on_hand)}</td>
-                <td>${fmtQty(l.qty_reserved)}</td>
-                <td style="font-weight:600;color:var(--color-success)">${fmtQty(l.qty_available)}</td>
-                <td>${mono(l.warehouse_code)}</td>
-                <td>${l.location_barcode ? `<span class="location-path">${l.location_barcode}</span>` : '—'}</td>
-                <td>${badge(l.status)}</td>
-                <td>${badge(l.qty_confidence)}</td>
-              </tr>`;
-            }).join('')}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  `;
+      <div class="card-header"><div class="card-title">Lots & Rolls</div><div class="card-subtitle">${data.lots.length} lots</div></div>
+      <div class="table-wrapper"><table>
+        <thead><tr><th>Lot ID</th><th>Item</th><th>On Hand</th><th>Reserved</th><th>Available</th><th>Location</th><th>Status</th></tr></thead>
+        <tbody>${data.lots.map(l => `<tr>
+          <td>${trackingId(l.lot_tracking)}</td>
+          <td>${l.item_name || '—'}</td>
+          <td>${fmtQty(l.qty_on_hand)}m</td>
+          <td>${fmtQty(l.qty_reserved)}m</td>
+          <td>${fmtQty(l.qty_available)}m</td>
+          <td><span class="location-path">${l.location_path || '—'}</span></td>
+          <td>${badge(l.status)}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+    </div>`;
 }
 
 // ===== WAREHOUSES =====
 async function loadWarehouses() {
   const el = document.getElementById('page-warehouses');
-  el.innerHTML = '<div class="loading-skeleton skeleton-row"></div>'.repeat(3);
-  const whData = await api('/warehouses', { entity_id: 'all' });
-  if (!whData) return;
-
+  el.innerHTML = '<div class="loading-skeleton skeleton-kpi" style="height:200px"></div>';
+  const data = await api('/warehouses');
+  if (!data?.warehouses?.length) { el.innerHTML = emptyState('No warehouses'); return; }
   el.innerHTML = `
-    <div class="kpi-grid">
-      ${whData.warehouses.map(w => `
-        <div class="kpi-card">
-          <div class="kpi-label">${w.name} ${statusDot(w.is_active)}</div>
-          <div class="kpi-value">${w.active_lots} lots</div>
-          <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:var(--space-1)">${fmtQty(w.total_stock)}m in stock &middot; ${w.code}</div>
-        </div>
-      `).join('')}
-    </div>
-    <div id="warehouse-locations"></div>
-  `;
-
-  // Load locations for first warehouse
-  if (whData.warehouses.length > 0) {
-    await loadLocationsForWarehouse(whData.warehouses[0].id, whData.warehouses[0].name);
-  }
+    <div class="warehouse-grid">${data.warehouses.map(w => `
+      <div class="rack-card">
+        <div class="rack-name">${w.location_path}</div>
+        <div class="rack-stats">${w.total_lots} lots · ${fmtQty(w.total_qty)}m</div>
+        <div class="rack-bar"><div class="rack-bar-fill" style="width:${Math.min(100,(w.total_qty/100)*100)}%"></div></div>
+      </div>`).join('')}
+    </div>`;
 }
 
-async function loadLocationsForWarehouse(whId, whName) {
-  const locData = await api('/locations', { warehouse_id: whId });
-  if (!locData) return;
-  const container = document.getElementById('warehouse-locations');
-
-  container.innerHTML = `
-    <div class="card">
-      <div class="card-header">
-        <div><div class="card-title">Locations — ${whName}</div><div class="card-subtitle">Rack/bin hierarchy</div></div>
-      </div>
-      <div style="padding:var(--space-4)">
-        <div class="warehouse-grid">
-          ${locData.locations.map(l => {
-            const pct = l.capacity_qty ? Math.min((l.total_qty / l.capacity_qty) * 100, 100) : (l.lot_count > 0 ? 50 : 0);
-            return `<div class="rack-card">
-              <div class="rack-name">${l.location_barcode || l.rack_code}</div>
-              <div class="rack-stats">${l.lot_count} lots &middot; ${fmtQty(l.total_qty)}m</div>
-              <div style="font-size:10px;color:var(--color-text-faint);margin-top:2px">${badge(l.location_type)}</div>
-              <div class="rack-bar"><div class="rack-bar-fill" style="width:${pct}%"></div></div>
-            </div>`;
-          }).join('')}
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-// ===== MOVEMENT LEDGER =====
+// ===== MOVEMENTS =====
 async function loadMovements() {
   const el = document.getElementById('page-movements');
-  el.innerHTML = '<div class="loading-skeleton skeleton-row"></div>'.repeat(5);
+  el.innerHTML = skeletonTable(15);
   const data = await api('/movements');
-  if (!data) return;
-
+  if (!data?.movements?.length) { el.innerHTML = emptyState('No movements'); return; }
   el.innerHTML = `
     <div class="card">
-      <div class="card-header">
-        <div><div class="card-title">Inventory Movement Ledger</div><div class="card-subtitle">Immutable, append-only record of all inventory changes</div></div>
-      </div>
-      <div class="table-wrapper">
-        <table>
-          <thead><tr><th>ID</th><th>Type</th><th>Item</th><th>Tracking ID</th><th>Delta</th><th>Before</th><th>After</th><th>Reason</th><th>By</th><th>Channel</th><th>Time</th></tr></thead>
-          <tbody>
-            ${data.movements.map(m => `<tr>
-              <td>${mono(m.id.substring(0,8))}</td>
-              <td><span class="movement-type ${m.movement_type}">${m.movement_type}</span></td>
-              <td>${m.item_name || '—'}</td>
-              <td>${trackingId(m.lot_tracking || m.tracking_id)}</td>
-              <td>${qtyDelta(m.qty_delta)}</td>
-              <td>${fmtQty(m.qty_before)}</td>
-              <td>${fmtQty(m.qty_after)}</td>
-              <td>${m.reason_code || '—'}</td>
-              <td>${mono(m.action_by)}</td>
-              <td>${badge(m.source_channel || 'web')}</td>
-              <td>${fmtDate(m.action_at)}</td>
-            </tr>`).join('')}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  `;
+      <div class="card-header"><div class="card-title">Movement Ledger</div><div class="card-subtitle">${data.movements.length} entries</div></div>
+      <div class="table-wrapper"><table>
+        <thead><tr><th>Type</th><th>Item</th><th>Lot</th><th>Delta</th><th>Before</th><th>After</th><th>Location</th><th>By</th><th>Time</th></tr></thead>
+        <tbody>${data.movements.map(m => `<tr>
+          <td><span class="movement-type ${m.movement_type}">${m.movement_type}</span></td>
+          <td>${m.item_name || '—'}</td>
+          <td>${mono(m.lot_tracking)}</td>
+          <td>${qtyDelta(m.qty_delta)}</td>
+          <td>${fmtQty(m.qty_before)}</td>
+          <td>${fmtQty(m.qty_after)}</td>
+          <td><span class="location-path">${m.location_path || '—'}</span></td>
+          <td>${mono(m.action_by)}</td>
+          <td>${fmtDate(m.action_at)}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+    </div>`;
 }
 
-// ===== ADJUSTMENTS / APPROVALS =====
+// ===== ADJUSTMENTS =====
 async function loadAdjustments() {
   const el = document.getElementById('page-adjustments');
-  el.innerHTML = '<div class="loading-skeleton skeleton-row"></div>'.repeat(3);
+  el.innerHTML = skeletonTable(10);
   const data = await api('/adjustments');
-  if (!data) return;
-
+  if (!data?.adjustments?.length) { el.innerHTML = emptyState('No pending approvals'); return; }
   el.innerHTML = `
-    <div class="tab-bar">
-      <button class="tab-btn active" onclick="filterAdj('all',this)">All</button>
-      <button class="tab-btn" onclick="filterAdj('pending',this)">Pending</button>
-      <button class="tab-btn" onclick="filterAdj('approved',this)">Approved</button>
-      <button class="tab-btn" onclick="filterAdj('rejected',this)">Rejected</button>
-    </div>
     <div class="card">
-      <div class="card-header">
-        <div><div class="card-title">Adjustment Requests</div><div class="card-subtitle">Approval-gated operational controls</div></div>
-      </div>
-      <div class="table-wrapper">
-        <table>
-          <thead><tr><th>ID</th><th>Type</th><th>Qty Before</th><th>Qty After</th><th>Reason</th><th>Notes</th><th>Status</th><th>Requested By</th><th>Approved By</th><th>Actions</th></tr></thead>
-          <tbody id="adj-tbody">
-            ${data.adjustments.map(a => `<tr data-status="${a.status}">
-              <td>${mono(a.id.substring(0,8))}</td>
-              <td>${badge(a.adjustment_type)}</td>
-              <td>${fmtQty(a.qty_before)}</td>
-              <td>${fmtQty(a.qty_after)}</td>
-              <td>${mono(a.reason_code)}</td>
-              <td style="max-width:200px;font-size:11px">${a.notes || '—'}</td>
-              <td>${badge(a.status)}</td>
-              <td>${mono(a.requested_by)}</td>
-              <td>${mono(a.approved_by || '—')}</td>
-              <td>
-                ${a.status === 'pending' ? `
-                  <button class="btn btn-sm btn-success" onclick="approveAdj('${a.id}')">Approve</button>
-                  <button class="btn btn-sm btn-error" onclick="rejectAdj('${a.id}')">Reject</button>
-                ` : ''}
-              </td>
-            </tr>`).join('')}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  `;
+      <div class="card-header"><div class="card-title">Adjustment Approvals</div><div class="card-subtitle">${data.adjustments.length} items</div></div>
+      <div class="table-wrapper"><table>
+        <thead><tr><th>Adj ID</th><th>Item</th><th>Lot</th><th>Delta</th><th>Reason</th><th>Status</th><th>Requested By</th><th>Time</th></tr></thead>
+        <tbody>${data.adjustments.map(a => `<tr>
+          <td>${trackingId(a.adjustment_id)}</td>
+          <td>${a.item_name || '—'}</td>
+          <td>${mono(a.lot_tracking)}</td>
+          <td>${qtyDelta(a.qty_delta)}</td>
+          <td>${a.reason || '—'}</td>
+          <td>${badge(a.status)}</td>
+          <td>${mono(a.requested_by)}</td>
+          <td>${fmtDate(a.requested_at)}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+    </div>`;
 }
-
-function filterAdj(status, btn) {
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  document.querySelectorAll('#adj-tbody tr').forEach(tr => {
-    tr.style.display = (status === 'all' || tr.dataset.status === status) ? '' : 'none';
-  });
-}
-
-async function approveAdj(id) { await apiPost('/approve_adjustment', { id }); loadAdjustments(); }
-async function rejectAdj(id) { await apiPost('/reject_adjustment', { id }); loadAdjustments(); }
 
 // ===== FINDINGS =====
 async function loadFindings() {
   const el = document.getElementById('page-findings');
-  el.innerHTML = '<div class="loading-skeleton skeleton-row"></div>'.repeat(3);
+  el.innerHTML = skeletonTable(10);
   const data = await api('/findings');
-  if (!data) return;
-
+  if (!data?.findings?.length) { el.innerHTML = emptyState('No findings'); return; }
   el.innerHTML = `
-    <div class="tab-bar">
-      <button class="tab-btn active" onclick="filterFindings('all',this)">All</button>
-      <button class="tab-btn" onclick="filterFindings('open',this)">Open</button>
-      <button class="tab-btn" onclick="filterFindings('resolved',this)">Resolved</button>
-    </div>
     <div class="card">
-      <div class="card-header">
-        <div><div class="card-title">Reconciliation Findings</div><div class="card-subtitle">Exceptions requiring investigation</div></div>
-      </div>
-      <div class="table-wrapper">
-        <table>
-          <thead><tr><th>Type</th><th>Severity</th><th>Description</th><th>Resource</th><th>Status</th><th>Resolved By</th><th>Created</th><th>Actions</th></tr></thead>
-          <tbody id="findings-tbody">
-            ${data.findings.map(f => `<tr data-status="${f.resolution_status}">
-              <td>${badge(f.finding_type)}</td>
-              <td>${badge(f.severity)}</td>
-              <td style="max-width:350px;font-size:11px">${f.description || '—'}</td>
-              <td>${mono(f.resource_type ? f.resource_type + ':' + (f.resource_id || '').substring(0,8) : '—')}</td>
-              <td>${badge(f.resolution_status)}</td>
-              <td>${mono(f.resolved_by || '—')}</td>
-              <td>${fmtDate(f.created_at)}</td>
-              <td>
-                ${f.resolution_status === 'open' ? `<button class="btn btn-sm btn-primary" onclick="resolveFinding('${f.id}')">Resolve</button>` : ''}
-              </td>
-            </tr>`).join('')}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  `;
+      <div class="card-header"><div class="card-title">Reconciliation Findings</div><div class="card-subtitle">${data.findings.length} findings</div></div>
+      <div class="table-wrapper"><table>
+        <thead><tr><th>ID</th><th>Type</th><th>Severity</th><th>Description</th><th>Status</th><th>Lot</th><th>Created</th></tr></thead>
+        <tbody>${data.findings.map(f => `<tr>
+          <td>${trackingId(f.finding_id)}</td>
+          <td>${badge(f.finding_type)}</td>
+          <td>${badge(f.severity)}</td>
+          <td style="max-width:350px">${f.description || '—'}</td>
+          <td>${badge(f.resolution_status)}</td>
+          <td>${mono(f.lot_tracking)}</td>
+          <td>${fmtDate(f.created_at)}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+    </div>`;
 }
-
-function filterFindings(status, btn) {
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  document.querySelectorAll('#findings-tbody tr').forEach(tr => {
-    tr.style.display = (status === 'all' || tr.dataset.status === status) ? '' : 'none';
-  });
-}
-
-async function resolveFinding(id) { await apiPost('/resolve_finding', { id }); loadFindings(); }
 
 // ===== INTEGRATIONS =====
 async function loadIntegrations() {
   const el = document.getElementById('page-integrations');
-  el.innerHTML = '<div class="loading-skeleton skeleton-row"></div>'.repeat(3);
-  const data = await api('/integration_events');
-  if (!data) return;
-
+  el.innerHTML = skeletonTable(5);
+  const data = await api('/integrations');
+  if (!data?.events?.length) { el.innerHTML = emptyState('No integration events'); return; }
   el.innerHTML = `
-    <div class="detail-grid">
-      <div class="info-card">
-        <h4>QuickBooks Desktop 2024</h4>
-        <div class="info-row"><span class="label">Connector Status</span><span class="value">${badge('active')}</span></div>
-        <div class="info-row"><span class="label">Pattern</span><span class="value">Outbox Queue</span></div>
-        <div class="info-row"><span class="label">Protocol</span><span class="value">QB SDK / QBFC</span></div>
-        <div class="info-row"><span class="label">Last Sync</span><span class="value">—</span></div>
-      </div>
-      <div class="info-card">
-        <h4>Integration Health</h4>
-        <div class="info-row"><span class="label">Pending Events</span><span class="value">${data.events.filter(e=>e.status==='pending').length}</span></div>
-        <div class="info-row"><span class="label">Applied</span><span class="value">${data.events.filter(e=>e.status==='applied').length}</span></div>
-        <div class="info-row"><span class="label">Failed</span><span class="value">${data.events.filter(e=>e.status==='failed').length}</span></div>
-        <div class="info-row"><span class="label">Dead Letter</span><span class="value">${data.events.filter(e=>e.status==='dead_letter').length}</span></div>
-      </div>
-    </div>
     <div class="card">
-      <div class="card-header">
-        <div><div class="card-title">Integration Event Queue</div><div class="card-subtitle">Outbox events for QuickBooks sync</div></div>
-      </div>
-      <div class="table-wrapper">
-        <table>
-          <thead><tr><th>ID</th><th>Type</th><th>Direction</th><th>Status</th><th>Retries</th><th>Error</th><th>Created</th><th>Processed</th><th>Actions</th></tr></thead>
-          <tbody>
-            ${data.events.map(e => `<tr>
-              <td>${mono(e.id.substring(0,8))}</td>
-              <td>${mono(e.event_type)}</td>
-              <td>${badge(e.direction)}</td>
-              <td>${badge(e.status)}</td>
-              <td>${e.retry_count}</td>
-              <td style="max-width:200px;font-size:11px">${e.error_message || '—'}</td>
-              <td>${fmtDate(e.created_at)}</td>
-              <td>${e.processed_at ? fmtDate(e.processed_at) : '—'}</td>
-              <td>
-                ${e.status === 'failed' || e.status === 'dead_letter' ? `<button class="btn btn-sm btn-secondary" onclick="retryIntegration('${e.id}')">Retry</button>` : ''}
-              </td>
-            </tr>`).join('')}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  `;
+      <div class="card-header"><div class="card-title">QBD Integration Events</div><div class="card-subtitle">${data.events.length} events</div></div>
+      <div class="table-wrapper"><table>
+        <thead><tr><th>Event ID</th><th>Type</th><th>Direction</th><th>Status</th><th>Entity</th><th>Payload</th><th>Created</th></tr></thead>
+        <tbody>${data.events.map(e => `<tr>
+          <td>${trackingId(e.event_id)}</td>
+          <td>${badge(e.event_type)}</td>
+          <td>${badge(e.direction)}</td>
+          <td>${badge(e.status)}</td>
+          <td>${mono(e.entity_id)}</td>
+          <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${e.payload || ''}">${e.payload ? e.payload.substring(0,60)+'…' : '—'}</td>
+          <td>${fmtDate(e.created_at)}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+    </div>`;
 }
 
-async function retryIntegration(id) { await apiPost('/retry_integration', { id }); loadIntegrations(); }
-
-// ===== USERS & RBAC =====
+// ===== USERS =====
 async function loadUsers() {
   const el = document.getElementById('page-users');
-  el.innerHTML = '<div class="loading-skeleton skeleton-row"></div>'.repeat(3);
+  el.innerHTML = skeletonTable(5);
   const data = await api('/users');
-  if (!data) return;
-
-  const roleMap = {
-    system_admin: { label: 'System Admin', desc: 'Full access, config, users, integrations' },
-    inventory_admin: { label: 'Inventory Admin', desc: 'Receiving, putaway, adjustments, cycle counts' },
-    warehouse_operator: { label: 'Warehouse Operator', desc: 'Pick, cut, scan, print within warehouse' },
-    warehouse_lead: { label: 'Warehouse Lead', desc: 'Approve variances, unlock lines, reprint' },
-    manager: { label: 'Manager', desc: 'Dashboards, reconciliation, high-level approvals' },
-    accounting_operator: { label: 'Accounting / QBD', desc: 'Manage QBD sync, mapping approvals' },
-  };
-
+  if (!data?.users?.length) { el.innerHTML = emptyState('No users'); return; }
   el.innerHTML = `
-    <div class="detail-grid">
-      <div class="info-card">
-        <h4>RBAC Summary</h4>
-        ${Object.entries(roleMap).map(([k,v]) => `
-          <div class="info-row"><span class="label">${v.label}</span><span class="value">${data.users.filter(u=>u.role===k).length}</span></div>
-        `).join('')}
-      </div>
-      <div class="info-card">
-        <h4>Permission Matrix</h4>
-        <div style="font-size:11px;color:var(--color-text-muted);line-height:1.6">
-          <div><strong>Import Requests:</strong> Lead, Inv Admin, Manager, Sys Admin</div>
-          <div><strong>Execute Pick/Cut:</strong> Operator, Lead, Inv Admin, Sys Admin</div>
-          <div><strong>Approve Adjustments:</strong> Lead (limited), Inv Admin, Manager, Sys Admin</div>
-          <div><strong>Force Close/Override:</strong> Lead, Inv Admin, Manager, Sys Admin</div>
-          <div><strong>Run QBD Sync:</strong> Accounting, Sys Admin</div>
-          <div><strong>Edit Mappings:</strong> Inv Admin, Accounting, Sys Admin</div>
-        </div>
-      </div>
-    </div>
     <div class="card">
-      <div class="card-header">
-        <div><div class="card-title">System Users</div><div class="card-subtitle">${data.users.length} total users</div></div>
-      </div>
-      <div class="table-wrapper">
-        <table>
-          <thead><tr><th>User</th><th>Username</th><th>Email</th><th>Role</th><th>Entity</th><th>Warehouse</th><th>Status</th></tr></thead>
-          <tbody>
-            ${data.users.map(u => `<tr>
-              <td style="font-weight:500">${u.display_name}</td>
-              <td>${mono(u.username)}</td>
-              <td style="font-size:11px">${u.email || '—'}</td>
-              <td>${badge(u.role)}</td>
-              <td>${u.entity_name || '—'}</td>
-              <td>${u.warehouse_name || 'All'}</td>
-              <td>${statusDot(u.is_active)} ${u.is_active ? 'Active' : 'Inactive'}</td>
-            </tr>`).join('')}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  `;
+      <div class="card-header"><div class="card-title">Users & RBAC</div><div class="card-subtitle">${data.users.length} users</div></div>
+      <div class="table-wrapper"><table>
+        <thead><tr><th>User</th><th>Email</th><th>Role</th><th>Status</th><th>Entity</th><th>Last Login</th></tr></thead>
+        <tbody>${data.users.map(u => `<tr>
+          <td>${mono(u.username)}</td>
+          <td>${u.email || '—'}</td>
+          <td>${badge(u.role)}</td>
+          <td>${statusDot(u.is_active)} ${u.is_active ? 'Active' : 'Inactive'}</td>
+          <td>${mono(u.entity_id)}</td>
+          <td>${fmtDate(u.last_login)}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+    </div>`;
 }
 
-// ===== AUDIT LOG =====
+// ===== AUDIT =====
 async function loadAudit() {
   const el = document.getElementById('page-audit');
-  el.innerHTML = '<div class="loading-skeleton skeleton-row"></div>'.repeat(5);
-  const data = await api('/audit_log');
-  if (!data) return;
-
+  el.innerHTML = skeletonTable(20);
+  const data = await api('/audit');
+  if (!data?.events?.length) { el.innerHTML = emptyState('No audit events'); return; }
   el.innerHTML = `
     <div class="card">
-      <div class="card-header">
-        <div><div class="card-title">Audit Trail</div><div class="card-subtitle">Who, what, when, why — for all operationally material events</div></div>
-      </div>
-      <div class="table-wrapper">
-        <table>
-          <thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Object</th><th>Object ID</th><th>Reason</th><th>Channel</th></tr></thead>
-          <tbody>
-            ${data.logs.length > 0 ? data.logs.map(l => `<tr>
-              <td>${fmtDate(l.created_at)}</td>
-              <td>${l.actor_name || mono(l.actor_user_id)}</td>
-              <td>${mono(l.action)}</td>
-              <td>${badge(l.object_type)}</td>
-              <td>${mono(l.object_id ? l.object_id.substring(0,8) : '—')}</td>
-              <td style="font-size:11px">${l.reason_code || '—'}</td>
-              <td>${badge(l.source_channel || 'web')}</td>
-            </tr>`).join('') : '<tr><td colspan="7" style="text-align:center;padding:var(--space-8);color:var(--color-text-faint)">No audit log entries yet. Actions will be recorded as operations are performed.</td></tr>'}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  `;
+      <div class="card-header"><div class="card-title">Audit Log</div><div class="card-subtitle">${data.events.length} events</div></div>
+      <div class="table-wrapper"><table>
+        <thead><tr><th>Time</th><th>User</th><th>Action</th><th>Table</th><th>Record</th><th>Changes</th></tr></thead>
+        <tbody>${data.events.map(e => `<tr>
+          <td>${fmtDate(e.action_at)}</td>
+          <td>${mono(e.action_by)}</td>
+          <td>${badge(e.action_type)}</td>
+          <td>${mono(e.table_name)}</td>
+          <td>${mono(e.record_id)}</td>
+          <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${e.changes_summary || ''}">${e.changes_summary ? e.changes_summary.substring(0,80) : '—'}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+    </div>`;
+}
+
+// ===== UI HELPERS =====
+function skeletonTable(rows) {
+  return `<div class="card"><div class="card-header"><div class="card-title loading-skeleton" style="width:160px;height:20px"></div></div>
+    ${Array(rows).fill('<div class="loading-skeleton skeleton-row"></div>').join('')}</div>`;
+}
+
+function emptyState(msg) {
+  return `<div class="empty-state"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M8 12h8M12 8v8"/></svg><p>${msg}</p></div>`;
 }
 
 // ===== INIT =====
 navigate('dashboard');
+
+// Reveal body after app init to prevent first-frame jitter
+document.body.classList.add('ready');
