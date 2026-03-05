@@ -1,5 +1,5 @@
 /* ========== NEXRAY Design Tokens ========== */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+/* Fonts loaded via <link> in index.html for non-blocking rendering */
 
 :root {
   --font-body: 'Inter', system-ui, -apple-system, sans-serif;
@@ -116,9 +116,11 @@ html, body { height: 100%; overflow: hidden; margin: 0; }
   border-right: 1px solid var(--color-divider);
   display: flex;
   flex-direction: column;
-  overflow-y: auto;
+  overflow: hidden;
   overscroll-behavior: contain;
   z-index: 20;
+  min-width: 240px;
+  max-width: 240px;
 }
 
 .sidebar-logo {
@@ -127,12 +129,13 @@ html, body { height: 100%; overflow: hidden; margin: 0; }
   align-items: center;
   gap: var(--space-3);
   border-bottom: 1px solid var(--color-divider);
+  flex-shrink: 0;
 }
 
 .sidebar-logo svg { flex-shrink: 0; }
 .sidebar-logo h1 { font-size: var(--text-lg); font-weight: 700; letter-spacing: -0.02em; }
 
-.sidebar-nav { flex: 1; overflow-y: auto; padding: var(--space-2) var(--space-2); }
+.sidebar-nav { flex: 1; overflow-y: auto; padding: var(--space-2) var(--space-2); min-height: 0; }
 
 .nav-section { margin-bottom: var(--space-4); }
 .nav-section-label {
@@ -172,6 +175,7 @@ html, body { height: 100%; overflow: hidden; margin: 0; }
   padding: var(--space-3) var(--space-3);
   border-top: 1px solid var(--color-divider);
   display: flex; align-items: center; gap: var(--space-2);
+  flex-shrink: 0;
 }
 
 .sidebar-footer .user-avatar {
@@ -445,6 +449,7 @@ tbody tr:last-child td { border-bottom: none; }
   .app { grid-template-columns: 1fr; }
   .sidebar {
     position: fixed; left: -260px; top: 0; bottom: 0; width: 260px;
+    min-width: 260px; max-width: 260px;
     z-index: 100; transition: left 0.25s ease;
   }
   .sidebar.open { left: 0; box-shadow: var(--shadow-lg); }
