@@ -1,20 +1,24 @@
-/* ========== NEXRAY App ========== */
+/* ========== NEXRAY App v2 — Full Feature UI ========== */
+
 const API = '/api';
 let currentEntity = 'ent-01';
 let currentPage = 'dashboard';
 let dashboardData = null;
+let currentUser = null;
 
 // ===== THEME TOGGLE =====
-(function() {
+(function () {
   const toggle = document.querySelector('[data-theme-toggle]');
   const root = document.documentElement;
-  let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  let theme = localStorage.getItem('nexray_theme') ||
+    (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   root.setAttribute('data-theme', theme);
   if (toggle) {
     updateToggleIcon(toggle, theme);
     toggle.addEventListener('click', () => {
       theme = theme === 'dark' ? 'light' : 'dark';
       root.setAttribute('data-theme', theme);
+      localStorage.setItem('nexray_theme', theme);
       updateToggleIcon(toggle, theme);
     });
   }
@@ -32,12 +36,24 @@ function toggleSidebar() {
   document.getElementById('mobileOverlay').classList.toggle('active');
 }
 
-// ===== API =====
+// ===== API CLIENT =====
+function getToken() { return localStorage.getItem('nexray_token'); }
+
+function authHeaders() {
+  const tok = getToken();
+  const h = { 'Content-Type': 'application/json' };
+  if (tok) h['Authorization'] = 'Bearer ' + tok;
+  return h;
+}
+
 async function api(endpoint, params = {}) {
   params.entity_id = currentEntity;
   const qs = new URLSearchParams(params).toString();
   try {
-    const res = await fetch(`${API}${endpoint}?${qs}`);
+    const res = await fetch(`${API}${endpoint}?${qs}`, {
+      headers: { 'Authorization': 'Bearer ' + (getToken() || '') }
+    });
+    if (res.status === 401) { showLogin(); return null; }
     return await res.json();
   } catch (e) {
     console.error('API Error:', e);
@@ -49,9 +65,10 @@ async function apiPost(endpoint, body) {
   try {
     const res = await fetch(`${API}${endpoint}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify(body)
     });
+    if (res.status === 401) { showLogin(); return null; }
     return await res.json();
   } catch (e) {
     console.error('API Error:', e);
@@ -59,33 +76,187 @@ async function apiPost(endpoint, body) {
   }
 }
 
+async function apiPut(endpoint, body) {
+  try {
+    const res = await fetch(`${API}${endpoint}`, {
+      method: 'PUT',
+      headers: authHeaders(),
+      body: JSON.stringify(body)
+    });
+    if (res.status === 401) { showLogin(); return null; }
+    return await res.json();
+  } catch (e) {
+    console.error('API Error:', e);
+    return null;
+  }
+}
+
+async function apiDelete(endpoint) {
+  try {
+    const res = await fetch(`${API}${endpoint}`, {
+      method: 'DELETE',
+      headers: authHeaders()
+    });
+    if (res.status === 401) { showLogin(); return null; }
+    return await res.json();
+  } catch (e) {
+    console.error('API Error:', e);
+    return null;
+  }
+}
+
+// ===== AUTH =====
+function showLogin() {
+  document.getElementById('loginScreen').style.display = '';
+  document.getElementById('appContainer').style.display = 'none';
+}
+
+function showApp() {
+  document.getElementById('loginScreen').style.display = 'none';
+  document.getElementById('appContainer').style.display = 'grid';
+}
+
+async function handleLogin(e) {
+  e.preventDefault();
+  const username = document.getElementById('loginUsername').value.trim();
+  const password = document.getElementById('loginPassword').value.trim();
+  const btn = document.getElementById('loginBtn');
+  const errEl = document.getElementById('loginError');
+
+  btn.disabled = true;
+  btn.textContent = 'Signing in…';
+  errEl.classList.remove('visible');
+
+  try {
+    const res = await fetch(`${API}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      errEl.textContent = data.detail || 'Invalid credentials.';
+      errEl.classList.add('visible');
+      btn.disabled = false;
+      btn.textContent = 'Sign In';
+      return;
+    }
+    localStorage.setItem('nexray_token', data.token);
+    currentUser = data.user;
+    updateSidebarUser(currentUser);
+    // Set entity to user's entity
+    if (currentUser.entity_id) {
+      currentEntity = currentUser.entity_id;
+      const sel = document.getElementById('entitySelect');
+      if (sel) sel.value = currentEntity;
+    }
+    showApp();
+    navigate('dashboard');
+    document.body.classList.add('ready');
+  } catch (err) {
+    errEl.textContent = 'Connection error. Please try again.';
+    errEl.classList.add('visible');
+    btn.disabled = false;
+    btn.textContent = 'Sign In';
+  }
+}
+
+async function handleLogout() {
+  try {
+    await apiPost('/auth/logout', {});
+  } catch (_) {}
+  localStorage.removeItem('nexray_token');
+  currentUser = null;
+  document.body.classList.remove('ready');
+  showLogin();
+  setTimeout(() => document.body.classList.add('ready'), 50);
+}
+
+function updateSidebarUser(user) {
+  if (!user) return;
+  const initials = user.display_name
+    .split(' ')
+    .map(w => w[0])
+    .join('')
+    .substring(0, 2)
+    .toUpperCase();
+  const el = document.getElementById('sidebarAvatar');
+  const nm = document.getElementById('sidebarUserName');
+  const rl = document.getElementById('sidebarUserRole');
+  if (el) el.textContent = initials;
+  if (nm) nm.textContent = user.display_name;
+  if (rl) rl.textContent = user.role.replace(/_/g, ' ');
+}
+
+// ===== INIT (auth check) =====
+async function initApp() {
+  const token = getToken();
+  if (!token) {
+    showLogin();
+    document.body.classList.add('ready');
+    return;
+  }
+  // Validate token with /api/auth/me
+  try {
+    const res = await fetch(`${API}/auth/me`, {
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+    if (!res.ok) {
+      localStorage.removeItem('nexray_token');
+      showLogin();
+      document.body.classList.add('ready');
+      return;
+    }
+    const user = await res.json();
+    currentUser = user;
+    updateSidebarUser(user);
+    if (user.entity_id) {
+      currentEntity = user.entity_id;
+      const sel = document.getElementById('entitySelect');
+      if (sel) sel.value = currentEntity;
+    }
+    showApp();
+    navigate('dashboard');
+  } catch (e) {
+    showLogin();
+  }
+  document.body.classList.add('ready');
+}
+
 // ===== NAVIGATION =====
 const pageTitles = {
-  dashboard: ['Dashboard', 'NEXRAY › Operations'],
-  outbound: ['Outbound Queue', 'NEXRAY › OMS › Outbound'],
-  cuts: ['Cut Transactions', 'NEXRAY › Execution › Cuts'],
-  tags: ['Tags & Labels', 'NEXRAY › Execution › Tags'],
-  inventory: ['Lots & Rolls', 'NEXRAY › WMS › Inventory'],
-  warehouses: ['Warehouses', 'NEXRAY › WMS › Locations'],
-  movements: ['Movement Ledger', 'NEXRAY › WMS › Ledger'],
-  adjustments: ['Approvals', 'NEXRAY › Controls › Approvals'],
-  findings: ['Reconciliation Findings', 'NEXRAY › Controls › Findings'],
-  integrations: ['Integrations', 'NEXRAY › System › QBD Integration'],
-  users: ['Users & RBAC', 'NEXRAY › System › Access Control'],
-  audit: ['Audit Log', 'NEXRAY › System › Audit'],
+  dashboard:   ['Dashboard', 'NEXRAY \u203A Operations'],
+  outbound:    ['Outbound Queue', 'NEXRAY \u203A OMS \u203A Outbound'],
+  cuts:        ['Cut Transactions', 'NEXRAY \u203A Execution \u203A Cuts'],
+  tags:        ['Tags & Labels', 'NEXRAY \u203A Execution \u203A Tags'],
+  inbound:     ['Inbound Orders', 'NEXRAY \u203A OMS \u203A Inbound'],
+  receiving:   ['Receiving Sessions', 'NEXRAY \u203A OMS \u203A Receiving'],
+  channels:    ['Channel Connections', 'NEXRAY \u203A OMS \u203A Channels'],
+  inventory:   ['Lots & Rolls', 'NEXRAY \u203A WMS \u203A Inventory'],
+  warehouses:  ['Warehouses', 'NEXRAY \u203A WMS \u203A Locations'],
+  movements:   ['Movement Ledger', 'NEXRAY \u203A WMS \u203A Ledger'],
+  putaway:     ['Putaway', 'NEXRAY \u203A WMS \u203A Putaway'],
+  adjustments: ['Approvals', 'NEXRAY \u203A Controls \u203A Approvals'],
+  findings:    ['Reconciliation Findings', 'NEXRAY \u203A Controls \u203A Findings'],
+  integrations:['Integrations', 'NEXRAY \u203A System \u203A QBD Integration'],
+  items:       ['Items', 'NEXRAY \u203A System \u203A Items'],
+  suppliers:   ['Suppliers', 'NEXRAY \u203A System \u203A Suppliers'],
+  customers:   ['Customers', 'NEXRAY \u203A System \u203A Customers'],
+  users:       ['Users & RBAC', 'NEXRAY \u203A System \u203A Access Control'],
+  audit:       ['Audit Log', 'NEXRAY \u203A System \u203A Audit'],
 };
 
 function navigate(page) {
   currentPage = page;
   document.querySelectorAll('.page-section').forEach(s => s.classList.remove('active'));
-  document.getElementById(`page-${page}`).classList.add('active');
+  const section = document.getElementById(`page-${page}`);
+  if (section) section.classList.add('active');
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.querySelector(`.nav-item[data-page="${page}"]`)?.classList.add('active');
   const [title, breadcrumb] = pageTitles[page] || [page, ''];
   document.getElementById('page-title').textContent = title;
   document.getElementById('page-breadcrumb').textContent = breadcrumb;
   loadPage(page);
-  // Close mobile sidebar
   document.getElementById('sidebar').classList.remove('open');
   document.getElementById('mobileOverlay').classList.remove('active');
 }
@@ -95,38 +266,89 @@ function switchEntity(eid) { currentEntity = eid; loadPage(currentPage); }
 // ===== HELPERS =====
 function badge(status) {
   if (!status) return '';
-  const cls = `badge badge-${status.replace(/\s/g,'_')}`;
-  return `<span class="${cls}">${status.replace(/_/g,' ')}</span>`;
+  const cls = `badge badge-${status.replace(/\s/g, '_')}`;
+  return `<span class="${cls}">${status.replace(/_/g, ' ')}</span>`;
 }
 
-function trackingId(id) { return id ? `<span class="tracking-id">${id}</span>` : '—'; }
-function mono(val) { return val ? `<span class="mono">${val}</span>` : '—'; }
-function fmtQty(val) { return val != null ? Number(val).toFixed(2) : '—'; }
-function fmtDate(d) { if (!d) return '—'; const dt = new Date(d + 'Z'); return dt.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); }
+function trackingId(id) { return id ? `<span class="tracking-id">${id}</span>` : '\u2014'; }
+function mono(val) { return val ? `<span class="mono">${val}</span>` : '\u2014'; }
+function fmtQty(val) { return val != null ? Number(val).toFixed(2) : '\u2014'; }
+function fmtDate(d) {
+  if (!d) return '\u2014';
+  const dt = new Date(d + (d.includes('T') ? '' : 'Z'));
+  return dt.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
 function statusDot(active) { return `<span class="status-dot ${active ? 'active' : 'inactive'}"></span>`; }
 
 function qtyDelta(val) {
-  if (val == null) return '—';
+  if (val == null) return '\u2014';
   const n = Number(val);
   const cls = n > 0 ? 'qty-positive' : n < 0 ? 'qty-negative' : '';
   return `<span class="${cls}">${n > 0 ? '+' : ''}${n.toFixed(2)}</span>`;
 }
 
+function esc(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// ===== TOAST =====
+function toast(msg, type = 'info') {
+  const container = document.getElementById('toastContainer');
+  const t = document.createElement('div');
+  t.className = `toast toast-${type}`;
+  t.textContent = msg;
+  container.appendChild(t);
+  setTimeout(() => {
+    t.style.opacity = '0';
+    t.style.transition = 'opacity 200ms';
+    setTimeout(() => t.remove(), 200);
+  }, 3500);
+}
+
+// ===== MODAL SYSTEM =====
+function openModal(title, bodyHtml, footerHtml, sizeClass = '') {
+  const overlay = document.getElementById('modalOverlay');
+  const modal = document.getElementById('modalContainer');
+  document.getElementById('modalTitle').textContent = title;
+  document.getElementById('modalBody').innerHTML = bodyHtml;
+  document.getElementById('modalFooter').innerHTML = footerHtml;
+  modal.className = `modal${sizeClass ? ' ' + sizeClass : ''}`;
+  overlay.classList.add('open');
+}
+
+function closeModal() {
+  document.getElementById('modalOverlay').classList.remove('open');
+  document.getElementById('modalBody').innerHTML = '';
+  document.getElementById('modalFooter').innerHTML = '';
+}
+
 // ===== PAGE LOADERS =====
 async function loadPage(page) {
   const loaders = {
-    dashboard: loadDashboard,
-    outbound: loadOutbound,
-    cuts: loadCuts,
-    tags: loadTags,
-    inventory: loadInventory,
-    warehouses: loadWarehouses,
-    movements: loadMovements,
-    adjustments: loadAdjustments,
-    findings: loadFindings,
+    dashboard:    loadDashboard,
+    outbound:     loadOutbound,
+    cuts:         loadCuts,
+    tags:         loadTags,
+    inbound:      loadInbound,
+    receiving:    loadReceiving,
+    channels:     loadChannels,
+    inventory:    loadInventory,
+    warehouses:   loadWarehouses,
+    movements:    loadMovements,
+    putaway:      loadPutaway,
+    adjustments:  loadAdjustments,
+    findings:     loadFindings,
     integrations: loadIntegrations,
-    users: loadUsers,
-    audit: loadAudit,
+    items:        loadItems,
+    suppliers:    loadSuppliers,
+    customers:    loadCustomers,
+    users:        loadUsers,
+    audit:        loadAudit,
   };
   if (loaders[page]) await loaders[page]();
 }
@@ -141,18 +363,12 @@ async function loadDashboard() {
   dashboardData = data;
   const k = data.kpis;
 
-  // Update nav badges
   const pb = document.getElementById('nav-pending-badge');
-  if (pb) pb.textContent = k.pending_lines > 0 ? k.pending_lines : '';
-  if (pb && k.pending_lines <= 0) pb.style.display = 'none'; else if (pb) pb.style.display = 'flex';
-
+  if (pb) { pb.textContent = k.pending_lines > 0 ? k.pending_lines : ''; pb.style.display = k.pending_lines > 0 ? 'flex' : 'none'; }
   const ab = document.getElementById('nav-approval-badge');
-  if (ab) ab.textContent = k.pending_adjustments > 0 ? k.pending_adjustments : '';
-  if (ab && k.pending_adjustments <= 0) ab.style.display = 'none'; else if (ab) ab.style.display = 'flex';
-
+  if (ab) { ab.textContent = k.pending_adjustments > 0 ? k.pending_adjustments : ''; ab.style.display = k.pending_adjustments > 0 ? 'flex' : 'none'; }
   const fb = document.getElementById('nav-findings-badge');
-  if (fb) fb.textContent = k.open_findings > 0 ? k.open_findings : '';
-  if (fb && k.open_findings <= 0) fb.style.display = 'none'; else if (fb) fb.style.display = 'flex';
+  if (fb) { fb.textContent = k.open_findings > 0 ? k.open_findings : ''; fb.style.display = k.open_findings > 0 ? 'flex' : 'none'; }
 
   el.innerHTML = `
     <div class="kpi-grid">
@@ -187,7 +403,7 @@ async function loadDashboard() {
           <tbody>
             ${data.recent_movements.map(m => `<tr>
               <td><span class="movement-type ${m.movement_type}">${m.movement_type}</span></td>
-              <td>${m.item_name || '—'}</td>
+              <td>${m.item_name || '\u2014'}</td>
               <td>${trackingId(m.lot_tracking || m.tracking_id)}</td>
               <td>${qtyDelta(m.qty_delta)}</td>
               <td>${fmtQty(m.qty_before)}</td>
@@ -203,6 +419,7 @@ async function loadDashboard() {
     <div class="card">
       <div class="card-header">
         <div><div class="card-title">Active Findings</div><div class="card-subtitle">Reconciliation exceptions requiring attention</div></div>
+        <button class="btn btn-sm btn-secondary" onclick="runReconciliation()">Run Reconciliation</button>
       </div>
       <div class="table-wrapper">
         <table>
@@ -211,7 +428,7 @@ async function loadDashboard() {
             ${data.recent_findings.length > 0 ? data.recent_findings.map(f => `<tr>
               <td>${badge(f.finding_type)}</td>
               <td>${badge(f.severity)}</td>
-              <td style="max-width:400px">${f.description || '—'}</td>
+              <td style="max-width:400px">${f.description || '\u2014'}</td>
               <td>${badge(f.resolution_status)}</td>
               <td>${fmtDate(f.created_at)}</td>
             </tr>`).join('') : '<tr><td colspan="5" class="empty-state"><p>No active findings</p></td></tr>'}
@@ -222,277 +439,2110 @@ async function loadDashboard() {
   `;
 }
 
-// ===== OUTBOUND =====
+async function runReconciliation() {
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = 'Running\u2026';
+  const result = await apiPost('/reconciliation/run', { entity_id: currentEntity, run_type: 'manual' });
+  btn.disabled = false;
+  btn.textContent = 'Run Reconciliation';
+  if (result && result.success) {
+    toast(`Reconciliation complete: ${result.findings_count} finding(s) found`, result.findings_count > 0 ? 'warning' : 'success');
+    loadDashboard();
+  } else {
+    toast('Reconciliation failed', 'error');
+  }
+}
+
+// ===== OUTBOUND QUEUE =====
 async function loadOutbound() {
   const el = document.getElementById('page-outbound');
-  el.innerHTML = skeletonTable(10);
-  const data = await api('/outbound_lines');
-  if (!data?.lines?.length) { el.innerHTML = emptyState('No outbound lines'); return; }
+  el.innerHTML = '<div class="loading-skeleton skeleton-row"></div>'.repeat(5);
+  const data = await api('/outbound');
+  if (!data) return;
+  const lines = data.lines;
+  const statuses = ['all','pending','allocated','in_progress','cut_complete','tagged','closed','needs_approval','cancelled'];
+
   el.innerHTML = `
+    <div class="page-action-bar">
+      <div class="page-action-bar-left">
+        <div class="tab-bar">
+          ${statuses.map(s => `<button class="tab-btn ${s === 'all' ? 'active' : ''}" onclick="filterOutbound('${s}', this)">${s === 'all' ? 'All' : s.replace(/_/g,' ')}</button>`).join('')}
+        </div>
+      </div>
+      <div class="page-action-bar-right">
+        <button class="btn btn-primary" onclick="showCreateOutboundBatchModal()">+ Import Batch</button>
+      </div>
+    </div>
     <div class="card">
-      <div class="card-header"><div class="card-title">Outbound Queue</div><div class="card-subtitle">${data.lines.length} lines</div></div>
-      <div class="table-wrapper"><table>
-        <thead><tr><th>SO #</th><th>Customer</th><th>Item</th><th>Ordered</th><th>Allocated</th><th>Status</th><th>Priority</th><th>Ship By</th></tr></thead>
-        <tbody>${data.lines.map(l => `<tr>
-          <td>${trackingId(l.so_number)}</td>
-          <td>${l.customer_name || '—'}</td>
-          <td>${l.item_name || '—'}</td>
-          <td>${fmtQty(l.qty_ordered)}m</td>
-          <td>${fmtQty(l.qty_allocated)}m</td>
-          <td>${badge(l.status)}</td>
-          <td>${badge(l.priority)}</td>
-          <td>${fmtDate(l.ship_by_date)}</td>
-        </tr>`).join('')}</tbody>
-      </table></div>
-    </div>`;
+      <div class="card-header">
+        <div><div class="card-title">Outbound Request Lines</div><div class="card-subtitle">${lines.length} total lines</div></div>
+      </div>
+      <div class="table-wrapper">
+        <table>
+          <thead><tr><th>Line</th><th>Ref</th><th>Item</th><th>SKU</th><th>Requested</th><th>Allocated</th><th>Fulfilled</th><th>Variance</th><th>Status</th><th>Claimed By</th><th>Actions</th></tr></thead>
+          <tbody id="outbound-tbody">
+            ${lines.map(l => outboundRow(l)).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
 }
 
-// ===== CUTS =====
+function outboundRow(l) {
+  const varClass = l.qty_variance < 0 ? 'qty-negative' : l.qty_variance > 0 ? 'qty-positive' : '';
+  const actions = [];
+  if (l.status === 'pending') {
+    actions.push(`<button class="btn btn-sm btn-primary" onclick="fifoAllocate('${l.id}')">FIFO Allocate</button>`);
+  }
+  if (l.status === 'allocated') {
+    actions.push(`<button class="btn btn-sm btn-primary" onclick="claimLine('${l.id}')">Claim Line</button>`);
+  }
+  if (l.status === 'in_progress') {
+    actions.push(`<button class="btn btn-sm btn-secondary" onclick="showRecordCutModal('${l.id}','${esc(l.item_name)}','${esc(l.qty_requested)}')">Record Cut</button>`);
+  }
+  if (l.status === 'cut_complete' || l.status === 'tagged') {
+    actions.push(`<button class="btn btn-sm btn-success" onclick="closeLine('${l.id}')">Close Line</button>`);
+  }
+
+  return `<tr data-status="${l.status}">
+    <td>${mono('#' + l.line_no)}</td>
+    <td>${l.reference_no || '\u2014'}</td>
+    <td>${l.item_name || '\u2014'}</td>
+    <td>${mono(l.sku)}</td>
+    <td>${fmtQty(l.qty_requested)}</td>
+    <td>${fmtQty(l.qty_allocated)}</td>
+    <td>${fmtQty(l.qty_fulfilled)}</td>
+    <td><span class="${varClass}">${l.qty_variance !== 0 ? (l.qty_variance > 0 ? '+' : '') + Number(l.qty_variance).toFixed(2) : '0.00'}</span></td>
+    <td>${badge(l.status)}</td>
+    <td>${mono(l.claimed_by || '\u2014')}</td>
+    <td style="white-space:nowrap">${actions.join(' ')}</td>
+  </tr>`;
+}
+
+function filterOutbound(status, btn) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.querySelectorAll('#outbound-tbody tr').forEach(tr => {
+    tr.style.display = (status === 'all' || tr.dataset.status === status) ? '' : 'none';
+  });
+}
+
+async function fifoAllocate(lineId) {
+  const result = await apiPost('/outbound/allocate', { line_id: lineId });
+  if (result && result.success) {
+    toast(`Allocated ${fmtQty(result.total_allocated)}m across ${result.reservations.length} lot(s)`, 'success');
+    loadOutbound();
+  } else {
+    toast(result?.detail || 'Allocation failed', 'error');
+  }
+}
+
+async function claimLine(lineId) {
+  const result = await apiPost('/outbound/claim_line', { line_id: lineId });
+  if (result && result.success) {
+    toast('Line claimed \u2014 now in progress', 'success');
+    loadOutbound();
+  } else {
+    toast(result?.detail || 'Claim failed', 'error');
+  }
+}
+
+async function closeLine(lineId) {
+  const result = await apiPost('/outbound/close_line', { line_id: lineId });
+  if (result && result.success) {
+    toast('Line closed successfully', 'success');
+    loadOutbound();
+  } else {
+    toast(result?.detail || 'Close failed \u2014 check gate conditions', 'error');
+  }
+}
+
+function showRecordCutModal(lineId, itemName, qtyRequested) {
+  openModal('Record Cut', `
+    <p style="font-size:var(--text-xs);color:var(--color-text-muted);margin-bottom:var(--space-2)">Item: <strong>${esc(itemName)}</strong> \u2014 Requested: <strong>${fmtQty(qtyRequested)}m</strong></p>
+    <div id="cutLotList"><div class="loading-skeleton skeleton-row"></div></div>
+    <div class="form-group" style="margin-top:var(--space-3)">
+      <label class="form-label">Lot (Tracking ID)</label>
+      <select class="form-select" id="cutLotSelect"><option value="">Loading lots\u2026</option></select>
+    </div>
+    <div class="form-grid">
+      <div class="form-group">
+        <label class="form-label">Qty Requested</label>
+        <input type="number" class="form-input" id="cutQtyReq" value="${qtyRequested}" step="0.01" min="0">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Qty Actual (cut)</label>
+        <input type="number" class="form-input" id="cutQtyActual" placeholder="0.00" step="0.01" min="0">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Variance Reason (if applicable)</label>
+      <input type="text" class="form-input" id="cutVarianceReason" placeholder="e.g. edge defect, customer request">
+    </div>
+  `, `
+    <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+    <button class="btn btn-primary" onclick="submitRecordCut('${lineId}')">Record Cut</button>
+  `);
+
+  // Load lots for this item
+  loadLotsForCut(lineId);
+}
+
+async function loadLotsForCut(lineId) {
+  // Get line to find item_id
+  const data = await api('/outbound', { status: 'in_progress' });
+  if (!data) return;
+  const line = data.lines.find(l => l.id === lineId);
+  if (!line) return;
+
+  const invData = await api('/inventory', { status: 'active' });
+  if (!invData) return;
+
+  const lots = invData.lots.filter(l =>
+    l.item_id === line.item_id &&
+    (l.qty_on_hand - (l.qty_reserved || 0)) > 0
+  );
+
+  const sel = document.getElementById('cutLotSelect');
+  if (sel) {
+    sel.innerHTML = `<option value="">Select a lot\u2026</option>` +
+      lots.map(l => `<option value="${l.id}">${esc(l.tracking_id)} \u2014 ${fmtQty(l.qty_on_hand - (l.qty_reserved || 0))}m avail (${esc(l.lot_no || 'no lot')})</option>`).join('');
+  }
+  const listEl = document.getElementById('cutLotList');
+  if (listEl) listEl.innerHTML = '';
+}
+
+async function submitRecordCut(lineId) {
+  const lotId = document.getElementById('cutLotSelect').value;
+  const qtyReq = parseFloat(document.getElementById('cutQtyReq').value);
+  const qtyActual = parseFloat(document.getElementById('cutQtyActual').value);
+  const varianceReason = document.getElementById('cutVarianceReason').value.trim();
+
+  if (!lotId) { toast('Please select a lot', 'warning'); return; }
+  if (!qtyActual || qtyActual <= 0) { toast('Enter a valid actual qty', 'warning'); return; }
+
+  const result = await apiPost('/outbound/record_cut', {
+    line_id: lineId,
+    lot_id: lotId,
+    qty_requested: qtyReq,
+    qty_actual: qtyActual,
+    variance_reason: varianceReason || null
+  });
+
+  if (result && result.success) {
+    closeModal();
+    const msg = result.needs_approval
+      ? `Cut recorded \u2014 tag ${result.tag_code} generated. NEEDS APPROVAL (variance >5%)`
+      : `Cut recorded \u2014 tag ${result.tag_code} generated`;
+    toast(msg, result.needs_approval ? 'warning' : 'success');
+    loadOutbound();
+  } else {
+    toast(result?.detail || 'Cut failed', 'error');
+  }
+}
+
+function showCreateOutboundBatchModal() {
+  openModal('Import Outbound Batch', `
+    <div class="form-group">
+      <label class="form-label">Batch Code (auto-generated if empty)</label>
+      <input type="text" class="form-input" id="obBatchCode" placeholder="ORB-2024-001">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Reference No</label>
+      <input type="text" class="form-input" id="obRefNo" placeholder="PO-CUST-001">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Warehouse</label>
+      <select class="form-select" id="obWarehouse"><option value="wh-01">Manila Main</option><option value="wh-02">Cebu</option><option value="wh-03">Aurora</option></select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Lines</label>
+      <div class="lines-table-wrap">
+        <table>
+          <thead><tr><th>Item ID / Name</th><th>Qty (m)</th><th>UOM</th><th></th></tr></thead>
+          <tbody id="obLinesTbody">
+            <tr>
+              <td><input class="form-input" style="min-width:180px" placeholder="item id or name"></td>
+              <td><input type="number" class="form-input" style="width:80px" placeholder="0.00" step="0.01" min="0"></td>
+              <td><select class="form-select" style="width:80px"><option>meter</option><option>piece</option><option>pack</option></select></td>
+              <td><button class="btn btn-sm btn-error" onclick="this.closest('tr').remove()">✕</button></td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="lines-table-actions">
+          <button class="btn btn-sm btn-secondary" onclick="addOutboundLine()">+ Add Line</button>
+        </div>
+      </div>
+    </div>
+  `, `
+    <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+    <button class="btn btn-primary" onclick="submitCreateOutboundBatch()">Create Batch</button>
+  `, 'modal-lg');
+}
+
+function addOutboundLine() {
+  const tbody = document.getElementById('obLinesTbody');
+  if (!tbody) return;
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td><input class="form-input" style="min-width:180px" placeholder="item id or name"></td>
+    <td><input type="number" class="form-input" style="width:80px" placeholder="0.00" step="0.01" min="0"></td>
+    <td><select class="form-select" style="width:80px"><option>meter</option><option>piece</option><option>pack</option></select></td>
+    <td><button class="btn btn-sm btn-error" onclick="this.closest('tr').remove()">✕</button></td>
+  `;
+  tbody.appendChild(tr);
+}
+
+async function submitCreateOutboundBatch() {
+  const batchCode = document.getElementById('obBatchCode').value.trim() || null;
+  const refNo = document.getElementById('obRefNo').value.trim();
+  const warehouseId = document.getElementById('obWarehouse').value;
+
+  const rows = document.querySelectorAll('#obLinesTbody tr');
+  const lines = [];
+  rows.forEach(r => {
+    const inputs = r.querySelectorAll('input, select');
+    const itemVal = inputs[0].value.trim();
+    const qty = parseFloat(inputs[1].value);
+    const uom = inputs[2].value;
+    if (itemVal && qty > 0) {
+      const lineData = { qty, uom };
+      // Try to determine if it's an ID or a name
+      if (itemVal.startsWith('itm-')) {
+        lineData.item_id = itemVal;
+      } else {
+        lineData.item_name_raw = itemVal;
+      }
+      lines.push(lineData);
+    }
+  });
+
+  if (!lines.length) { toast('Add at least one line', 'warning'); return; }
+
+  const body = {
+    entity_id: currentEntity,
+    batch_code: batchCode,
+    requests: [{
+      warehouse_id: warehouseId,
+      reference_no: refNo || null,
+      lines
+    }]
+  };
+
+  const result = await apiPost('/outbound_batches', body);
+  if (result && result.success) {
+    closeModal();
+    toast(`Batch created: ${result.batch_code} (${result.total_lines} lines)`, 'success');
+    loadOutbound();
+  } else {
+    toast(result?.detail || 'Batch creation failed', 'error');
+  }
+}
+
+// ===== CUT TRANSACTIONS =====
 async function loadCuts() {
   const el = document.getElementById('page-cuts');
-  el.innerHTML = skeletonTable(10);
+  el.innerHTML = '<div class="loading-skeleton skeleton-row"></div>'.repeat(5);
   const data = await api('/cuts');
-  if (!data?.cuts?.length) { el.innerHTML = emptyState('No cut transactions'); return; }
+  if (!data) return;
+
   el.innerHTML = `
     <div class="card">
-      <div class="card-header"><div class="card-title">Cut Transactions</div><div class="card-subtitle">${data.cuts.length} cuts</div></div>
-      <div class="table-wrapper"><table>
-        <thead><tr><th>Cut ID</th><th>Item</th><th>Lot</th><th>SO #</th><th>Qty Cut</th><th>Status</th><th>Cut By</th><th>Time</th></tr></thead>
-        <tbody>${data.cuts.map(c => `<tr>
-          <td>${trackingId(c.cut_id)}</td>
-          <td>${c.item_name || '—'}</td>
-          <td>${mono(c.lot_tracking)}</td>
-          <td>${trackingId(c.so_number)}</td>
-          <td>${fmtQty(c.qty_cut)}m</td>
-          <td>${badge(c.status)}</td>
-          <td>${mono(c.cut_by)}</td>
-          <td>${fmtDate(c.cut_at)}</td>
-        </tr>`).join('')}</tbody>
-      </table></div>
-    </div>`;
+      <div class="card-header">
+        <div><div class="card-title">Cut Transactions</div><div class="card-subtitle">Roll-level issuance records</div></div>
+      </div>
+      <div class="table-wrapper">
+        <table>
+          <thead><tr><th>ID</th><th>Item</th><th>Tracking ID</th><th>Lot</th><th>Requested</th><th>Actual</th><th>Variance</th><th>Status</th><th>Reason</th><th>Cut By</th><th>Time</th></tr></thead>
+          <tbody>
+            ${data.cuts.map(c => `<tr>
+              <td>${mono(c.id.substring(0,8))}</td>
+              <td>${c.item_name || '\u2014'}</td>
+              <td>${trackingId(c.tracking_id)}</td>
+              <td>${mono(c.lot_no)}</td>
+              <td>${fmtQty(c.qty_requested)}</td>
+              <td>${fmtQty(c.qty_actual)}</td>
+              <td>${qtyDelta(c.qty_variance)}</td>
+              <td>${badge(c.status)}</td>
+              <td style="max-width:200px;font-size:11px">${c.variance_reason || '\u2014'}</td>
+              <td>${mono(c.cut_by)}</td>
+              <td>${fmtDate(c.cut_at)}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
 }
 
-// ===== TAGS =====
+// ===== TAGS & LABELS =====
 async function loadTags() {
   const el = document.getElementById('page-tags');
-  el.innerHTML = skeletonTable(10);
+  el.innerHTML = '<div class="loading-skeleton skeleton-row"></div>'.repeat(5);
   const data = await api('/tags');
-  if (!data?.tags?.length) { el.innerHTML = emptyState('No tags found'); return; }
+  if (!data) return;
+
   el.innerHTML = `
     <div class="card">
-      <div class="card-header"><div class="card-title">Tags & Labels</div><div class="card-subtitle">${data.tags.length} tags</div></div>
-      <div class="table-wrapper"><table>
-        <thead><tr><th>Tag ID</th><th>Type</th><th>Lot</th><th>Item</th><th>Status</th><th>Printed By</th><th>Printed At</th></tr></thead>
-        <tbody>${data.tags.map(t => `<tr>
-          <td>${trackingId(t.tag_id)}</td>
-          <td>${badge(t.tag_type)}</td>
-          <td>${mono(t.lot_tracking)}</td>
-          <td>${t.item_name || '—'}</td>
-          <td>${badge(t.status)}</td>
-          <td>${mono(t.printed_by)}</td>
-          <td>${fmtDate(t.printed_at)}</td>
-        </tr>`).join('')}</tbody>
-      </table></div>
-    </div>`;
+      <div class="card-header">
+        <div><div class="card-title">Tag Labels</div><div class="card-subtitle">Print and scan tracking for execution evidence</div></div>
+      </div>
+      <div class="table-wrapper">
+        <table>
+          <thead><tr><th>Tag Code</th><th>Item</th><th>Tracking ID</th><th>Cut Qty</th><th>Status</th><th>Printed</th><th>Scanned</th><th>Created</th></tr></thead>
+          <tbody>
+            ${data.tags.map(t => `<tr>
+              <td>${trackingId(t.tag_code)}</td>
+              <td>${t.item_name || '\u2014'}</td>
+              <td>${trackingId(t.lot_tracking)}</td>
+              <td>${fmtQty(t.cut_qty)}</td>
+              <td>${badge(t.tag_status)}</td>
+              <td>${t.printed_at ? fmtDate(t.printed_at) : '\u2014'}</td>
+              <td>${t.scanned_at ? fmtDate(t.scanned_at) : '\u2014'}</td>
+              <td>${fmtDate(t.created_at)}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+// ===== INBOUND =====
+async function loadInbound() {
+  const el = document.getElementById('page-inbound');
+  el.innerHTML = '<div class="loading-skeleton skeleton-row"></div>'.repeat(3);
+  const data = await api('/supplier_orders');
+  if (!data) return;
+
+  el.innerHTML = `
+    <div class="page-action-bar">
+      <div class="page-action-bar-left"><span style="font-size:var(--text-xs);color:var(--color-text-muted)">${data.orders.length} supplier orders</span></div>
+      <div class="page-action-bar-right">
+        <button class="btn btn-primary" onclick="showCreateSupplierOrderModal()">+ Create Import</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div><div class="card-title">Supplier Orders (Inbound)</div><div class="card-subtitle">Import receipts and validation</div></div>
+      </div>
+      <div class="table-wrapper">
+        <table>
+          <thead><tr><th>Batch Code</th><th>Supplier</th><th>Status</th><th>Lines</th><th>Errors</th><th>Notes</th><th>Created</th><th>Actions</th></tr></thead>
+          <tbody>
+            ${data.orders.length > 0 ? data.orders.map(o => `<tr>
+              <td>${mono(o.batch_code)}</td>
+              <td>${o.supplier_name || '\u2014'}</td>
+              <td>${badge(o.status)}</td>
+              <td>${o.total_lines}</td>
+              <td>${o.error_count > 0 ? `<span class="qty-negative">${o.error_count}</span>` : '0'}</td>
+              <td style="max-width:200px;font-size:11px">${o.notes || '\u2014'}</td>
+              <td>${fmtDate(o.created_at)}</td>
+              <td style="white-space:nowrap">
+                ${o.status === 'draft' || o.status === 'failed_with_errors' ? `<button class="btn btn-sm btn-secondary" onclick="validateSupplierOrder('${o.id}')">Validate</button>` : ''}
+                ${o.status === 'validated' ? `<button class="btn btn-sm btn-primary" onclick="showStartReceivingModal('${o.id}','${esc(o.batch_code)}')">Start Receiving</button>` : ''}
+              </td>
+            </tr>`).join('') : '<tr><td colspan="8" class="empty-state"><p>No supplier orders yet</p></td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+async function validateSupplierOrder(solId) {
+  const result = await apiPost(`/supplier_orders/${solId}/validate`, {});
+  if (result) {
+    const msg = result.error_count > 0
+      ? `Validation complete: ${result.error_count} error(s) found`
+      : 'Validation passed \u2014 all lines valid';
+    toast(msg, result.error_count > 0 ? 'warning' : 'success');
+    loadInbound();
+  } else {
+    toast('Validation failed', 'error');
+  }
+}
+
+function showCreateSupplierOrderModal() {
+  // Build supplier options
+  api('/suppliers').then(supData => {
+    const suppliers = supData ? supData.suppliers : [];
+    const supOptions = `<option value="">No supplier</option>` +
+      suppliers.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('');
+
+    openModal('Create Supplier Order (Import)', `
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Supplier</label>
+          <select class="form-select" id="solSupplier">${supOptions}</select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Batch Code (auto if empty)</label>
+          <input type="text" class="form-input" id="solBatchCode" placeholder="SOL-2024-001">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Notes</label>
+          <input type="text" class="form-input" id="solNotes" placeholder="Optional notes">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Order Lines</label>
+        <div class="lines-table-wrap">
+          <table>
+            <thead><tr><th>Item ID/Name</th><th>Qty Expected</th><th>UOM</th><th>Lot Info</th><th>Shade</th><th></th></tr></thead>
+            <tbody id="solLinesTbody">
+              <tr>
+                <td><input class="form-input" style="min-width:140px" placeholder="item id or name"></td>
+                <td><input type="number" class="form-input" style="width:80px" placeholder="0.00" step="0.01"></td>
+                <td><select class="form-select" style="width:70px"><option>meter</option><option>piece</option></select></td>
+                <td><input class="form-input" style="width:90px" placeholder="LOT-A1"></td>
+                <td><input class="form-input" style="width:80px" placeholder="IVR-01"></td>
+                <td><button class="btn btn-sm btn-error" onclick="this.closest('tr').remove()">✕</button></td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="lines-table-actions">
+            <button class="btn btn-sm btn-secondary" onclick="addSolLine()">+ Add Line</button>
+          </div>
+        </div>
+      </div>
+    `, `
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitCreateSupplierOrder()">Create Order</button>
+    `, 'modal-xl');
+  });
+}
+
+function addSolLine() {
+  const tbody = document.getElementById('solLinesTbody');
+  if (!tbody) return;
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td><input class="form-input" style="min-width:140px" placeholder="item id or name"></td>
+    <td><input type="number" class="form-input" style="width:80px" placeholder="0.00" step="0.01"></td>
+    <td><select class="form-select" style="width:70px"><option>meter</option><option>piece</option></select></td>
+    <td><input class="form-input" style="width:90px" placeholder="LOT-A1"></td>
+    <td><input class="form-input" style="width:80px" placeholder="IVR-01"></td>
+    <td><button class="btn btn-sm btn-error" onclick="this.closest('tr').remove()">✕</button></td>
+  `;
+  tbody.appendChild(tr);
+}
+
+async function submitCreateSupplierOrder() {
+  const supplierId = document.getElementById('solSupplier').value;
+  const batchCode = document.getElementById('solBatchCode').value.trim() || null;
+  const notes = document.getElementById('solNotes').value.trim() || null;
+
+  const rows = document.querySelectorAll('#solLinesTbody tr');
+  const lines = [];
+  rows.forEach(r => {
+    const inputs = r.querySelectorAll('input, select');
+    const itemVal = inputs[0].value.trim();
+    const qty = parseFloat(inputs[1].value);
+    const uom = inputs[2].value;
+    const lotInfo = inputs[3].value.trim() || null;
+    const shadeInfo = inputs[4].value.trim() || null;
+    if (itemVal && qty > 0) {
+      const lineData = { qty_expected: qty, uom, lot_info: lotInfo, shade_info: shadeInfo };
+      if (itemVal.startsWith('itm-')) lineData.item_id = itemVal;
+      else lineData.item_name_raw = itemVal;
+      lines.push(lineData);
+    }
+  });
+
+  if (!lines.length) { toast('Add at least one line', 'warning'); return; }
+
+  const result = await apiPost('/supplier_orders', {
+    entity_id: currentEntity,
+    supplier_id: supplierId || null,
+    batch_code: batchCode,
+    notes,
+    lines
+  });
+
+  if (result && result.success) {
+    closeModal();
+    toast(`Supplier order created: ${result.batch_code}`, 'success');
+    loadInbound();
+  } else {
+    toast(result?.detail || 'Creation failed', 'error');
+  }
+}
+
+function showStartReceivingModal(solId, batchCode) {
+  openModal('Start Receiving Session', `
+    <p style="font-size:var(--text-xs);color:var(--color-text-muted)">Starting receiving for: <strong>${esc(batchCode)}</strong></p>
+    <div class="form-group">
+      <label class="form-label">Warehouse</label>
+      <select class="form-select" id="recvWarehouse">
+        <option value="wh-01">Manila Main</option>
+        <option value="wh-02">Cebu</option>
+        <option value="wh-03">Aurora</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Notes</label>
+      <input type="text" class="form-input" id="recvNotes" placeholder="Optional notes">
+    </div>
+  `, `
+    <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+    <button class="btn btn-primary" onclick="submitStartReceiving('${solId}')">Start Receiving</button>
+  `);
+}
+
+async function submitStartReceiving(solId) {
+  const warehouseId = document.getElementById('recvWarehouse').value;
+  const notes = document.getElementById('recvNotes').value.trim() || null;
+
+  const result = await apiPost('/receivings', {
+    entity_id: currentEntity,
+    warehouse_id: warehouseId,
+    supplier_order_list_id: solId,
+    notes
+  });
+
+  if (result && result.success) {
+    closeModal();
+    toast('Receiving session started', 'success');
+    navigate('receiving');
+  } else {
+    toast(result?.detail || 'Failed to start receiving', 'error');
+  }
+}
+
+// ===== RECEIVING =====
+async function loadReceiving() {
+  const el = document.getElementById('page-receiving');
+  el.innerHTML = '<div class="loading-skeleton skeleton-row"></div>'.repeat(3);
+
+  // Load inventory to get recent receivings -- use movements as proxy
+  const movData = await api('/movements');
+  if (!movData) { el.innerHTML = '<div class="empty-state"><p>Unable to load</p></div>'; return; }
+
+  const receivingMovs = movData.movements.filter(m => m.movement_type === 'receive');
+
+  el.innerHTML = `
+    <div class="page-action-bar">
+      <div class="page-action-bar-left"></div>
+      <div class="page-action-bar-right">
+        <button class="btn btn-primary" onclick="showReceiveLotModal()">Receive Lot</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div><div class="card-title">Recent Receiving Events</div><div class="card-subtitle">Lots received into inventory</div></div>
+      </div>
+      <div class="table-wrapper">
+        <table>
+          <thead><tr><th>Tracking ID</th><th>Item</th><th>Qty</th><th>Warehouse</th><th>Received By</th><th>Time</th></tr></thead>
+          <tbody>
+            ${receivingMovs.length > 0 ? receivingMovs.map(m => `<tr>
+              <td>${trackingId(m.lot_tracking || m.tracking_id)}</td>
+              <td>${m.item_name || '\u2014'}</td>
+              <td>${fmtQty(m.qty_delta)}</td>
+              <td>${mono(m.warehouse_to_id)}</td>
+              <td>${mono(m.action_by)}</td>
+              <td>${fmtDate(m.action_at)}</td>
+            </tr>`).join('') : '<tr><td colspan="6" class="empty-state"><p>No receiving events yet</p></td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function showReceiveLotModal() {
+  // Load items and warehouses in parallel
+  Promise.all([api('/items'), api('/warehouses', { entity_id: 'all' }), api('/locations', { warehouse_id: 'wh-01' })]).then(([itemsData, whData, locData]) => {
+    const items = itemsData ? itemsData.items : [];
+    const warehouses = whData ? whData.warehouses : [];
+    const locs = locData ? locData.locations : [];
+
+    const itemOptions = `<option value="">Select item\u2026</option>` +
+      items.map(i => `<option value="${i.id}">${esc(i.name)} (${esc(i.sku)})</option>`).join('');
+    const whOptions = warehouses.map(w => `<option value="${w.id}">${esc(w.name)}</option>`).join('');
+    const locOptions = `<option value="">No location</option>` +
+      locs.map(l => `<option value="${l.id}">${esc(l.location_barcode || l.rack_code)}</option>`).join('');
+
+    openModal('Receive Lot', `
+      <div class="form-group">
+        <label class="form-label">Item *</label>
+        <select class="form-select" id="rlItem">${itemOptions}</select>
+      </div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Tracking ID (auto if empty)</label>
+          <input type="text" class="form-input" id="rlTrackingId" placeholder="TRK-2024-XXXX">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Lot No</label>
+          <input type="text" class="form-input" id="rlLotNo" placeholder="LOT-A1">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Qty *</label>
+          <input type="number" class="form-input" id="rlQty" placeholder="0.00" step="0.01" min="0">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Shade Code</label>
+          <input type="text" class="form-input" id="rlShade" placeholder="IVR-01">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Width (cm)</label>
+          <input type="number" class="form-input" id="rlWidth" placeholder="137" step="1">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Confidence</label>
+          <select class="form-select" id="rlConfidence">
+            <option value="supplier_reported">Supplier Reported</option>
+            <option value="measured">Measured</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Warehouse *</label>
+          <select class="form-select" id="rlWarehouse" onchange="loadReceivingLocations(this.value)">${whOptions}</select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Location</label>
+          <select class="form-select" id="rlLocation">${locOptions}</select>
+        </div>
+      </div>
+    `, `
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitReceiveLot()">Receive Lot</button>
+    `, 'modal-lg');
+  });
+}
+
+async function loadReceivingLocations(warehouseId) {
+  const locData = await api('/locations', { warehouse_id: warehouseId });
+  const sel = document.getElementById('rlLocation');
+  if (sel && locData) {
+    sel.innerHTML = `<option value="">No location</option>` +
+      locData.locations.map(l => `<option value="${l.id}">${esc(l.location_barcode || l.rack_code)}</option>`).join('');
+  }
+}
+
+async function submitReceiveLot() {
+  const itemId = document.getElementById('rlItem').value;
+  const qty = parseFloat(document.getElementById('rlQty').value);
+  const warehouseId = document.getElementById('rlWarehouse').value;
+
+  if (!itemId) { toast('Select an item', 'warning'); return; }
+  if (!qty || qty <= 0) { toast('Enter a valid quantity', 'warning'); return; }
+
+  // First, create a receiving session
+  const recvResult = await apiPost('/receivings', {
+    entity_id: currentEntity,
+    warehouse_id: warehouseId
+  });
+  if (!recvResult || !recvResult.success) { toast('Failed to create receiving session', 'error'); return; }
+
+  const receivingId = recvResult.id;
+  const body = {
+    item_id: itemId,
+    tracking_id: document.getElementById('rlTrackingId').value.trim() || null,
+    lot_no: document.getElementById('rlLotNo').value.trim() || null,
+    shade_code: document.getElementById('rlShade').value.trim() || null,
+    width_value: parseFloat(document.getElementById('rlWidth').value) || null,
+    qty_original: qty,
+    location_id: document.getElementById('rlLocation').value || null,
+    qty_confidence: document.getElementById('rlConfidence').value
+  };
+
+  const result = await apiPost(`/receivings/${receivingId}/receive_lot`, body);
+  if (result && result.success) {
+    // Auto-complete the receiving session
+    await apiPost(`/receivings/${receivingId}/complete`, {});
+    closeModal();
+    toast(`Lot received: ${result.tracking_id} (${fmtQty(qty)}m)`, 'success');
+    loadReceiving();
+  } else {
+    toast(result?.detail || 'Receiving failed', 'error');
+  }
+}
+
+// ===== CHANNELS =====
+async function loadChannels() {
+  const el = document.getElementById('page-channels');
+  el.innerHTML = '<div class="loading-skeleton skeleton-row"></div>'.repeat(3);
+  const data = await api('/channels', { entity_id: currentEntity });
+  if (!data) return;
+
+  const mappingsData = await api('/channel_mappings');
+  const mappings = mappingsData ? mappingsData.mappings : [];
+
+  el.innerHTML = `
+    <div class="page-action-bar">
+      <div class="page-action-bar-left"><span style="font-size:var(--text-xs);color:var(--color-text-muted)">${data.channels.length} channel(s)</span></div>
+      <div class="page-action-bar-right">
+        <button class="btn btn-primary" onclick="showAddChannelModal()">+ Add Channel</button>
+      </div>
+    </div>
+    <div class="channel-grid">
+      ${data.channels.map(ch => `
+        <div class="channel-card">
+          <div class="channel-card-header">
+            <div>
+              <span class="channel-type-badge ${ch.channel_type}">${ch.channel_type}</span>
+              <div style="font-size:var(--text-sm);font-weight:600;margin-top:var(--space-2)">${esc(ch.shop_name || 'Unnamed Channel')}</div>
+              <div style="font-size:11px;color:var(--color-text-faint);margin-top:2px">${esc(ch.shop_url || '\u2014')}</div>
+            </div>
+            ${statusDot(ch.is_active)}
+          </div>
+          <div class="info-row" style="margin-top:var(--space-2)">
+            <span class="label">Region</span>
+            <span class="value">${ch.region || '\u2014'}</span>
+          </div>
+          <div class="info-row">
+            <span class="label">Last Sync</span>
+            <span class="value">${ch.last_sync_at ? fmtDate(ch.last_sync_at) : 'Never'}</span>
+          </div>
+          <div class="channel-actions">
+            <button class="btn btn-sm btn-secondary" onclick="syncOrders('${ch.id}')">Sync Orders</button>
+            <button class="btn btn-sm btn-secondary" onclick="pushInventory('${ch.id}')">Push Inventory</button>
+            <button class="btn btn-sm btn-ghost" onclick="showAddMappingModal('${ch.id}')">+ Mapping</button>
+          </div>
+        </div>
+      `).join('')}
+      ${data.channels.length === 0 ? '<div class="empty-state" style="grid-column:1/-1"><p>No channels connected yet</p></div>' : ''}
+    </div>
+
+    ${mappings.length > 0 ? `
+    <div class="card">
+      <div class="card-header">
+        <div><div class="card-title">Product Mappings</div><div class="card-subtitle">Channel SKU to NEXRAY item links</div></div>
+      </div>
+      <div class="table-wrapper">
+        <table>
+          <thead><tr><th>Channel</th><th>Shop</th><th>Channel SKU</th><th>NEXRAY Item</th><th>NEXRAY SKU</th><th>Active</th></tr></thead>
+          <tbody>
+            ${mappings.map(m => `<tr>
+              <td>${badge(m.channel_type)}</td>
+              <td>${esc(m.shop_name)}</td>
+              <td>${mono(m.channel_sku)}</td>
+              <td>${esc(m.item_name)}</td>
+              <td>${mono(m.sku)}</td>
+              <td>${statusDot(m.is_active)}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    ` : ''}
+  `;
+}
+
+async function syncOrders(channelId) {
+  const result = await apiPost(`/channels/${channelId}/sync_orders`, {});
+  if (result && result.success) {
+    toast(result.message, 'success');
+    loadChannels();
+  } else {
+    toast(result?.detail || 'Sync failed', 'error');
+  }
+}
+
+async function pushInventory(channelId) {
+  const result = await apiPost(`/channels/${channelId}/push_inventory`, {});
+  if (result && result.success) {
+    toast(result.message, 'success');
+  } else {
+    toast(result?.detail || 'Push failed', 'error');
+  }
+}
+
+function showAddChannelModal() {
+  openModal('Add Channel Connection', `
+    <div class="form-grid">
+      <div class="form-group">
+        <label class="form-label">Channel Type *</label>
+        <select class="form-select" id="chType">
+          <option value="shopify">Shopify</option>
+          <option value="shopee">Shopee</option>
+          <option value="lazada">Lazada</option>
+          <option value="tiktokshop">TikTok Shop</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Shop Name *</label>
+        <input type="text" class="form-input" id="chShopName" placeholder="My Shopify Store">
+      </div>
+      <div class="form-group full">
+        <label class="form-label">Shop URL</label>
+        <input type="text" class="form-input" id="chShopUrl" placeholder="https://mystore.myshopify.com">
+      </div>
+      <div class="form-group">
+        <label class="form-label">API Key</label>
+        <input type="text" class="form-input" id="chApiKey" placeholder="sk_live_\u2026">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Region</label>
+        <select class="form-select" id="chRegion">
+          <option value="PH">Philippines</option>
+          <option value="SG">Singapore</option>
+          <option value="MY">Malaysia</option>
+          <option value="TH">Thailand</option>
+          <option value="ID">Indonesia</option>
+        </select>
+      </div>
+    </div>
+  `, `
+    <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+    <button class="btn btn-primary" onclick="submitAddChannel()">Connect Channel</button>
+  `);
+}
+
+async function submitAddChannel() {
+  const shopName = document.getElementById('chShopName').value.trim();
+  if (!shopName) { toast('Shop name is required', 'warning'); return; }
+
+  const result = await apiPost('/channels', {
+    entity_id: currentEntity,
+    channel_type: document.getElementById('chType').value,
+    shop_name: shopName,
+    shop_url: document.getElementById('chShopUrl').value.trim() || null,
+    api_key: document.getElementById('chApiKey').value.trim() || null,
+    region: document.getElementById('chRegion').value
+  });
+
+  if (result && result.success) {
+    closeModal();
+    toast('Channel connected', 'success');
+    loadChannels();
+  } else {
+    toast(result?.detail || 'Failed to add channel', 'error');
+  }
+}
+
+function showAddMappingModal(channelId) {
+  api('/items').then(itemsData => {
+    const items = itemsData ? itemsData.items : [];
+    const itemOptions = `<option value="">Select item\u2026</option>` +
+      items.map(i => `<option value="${i.id}">${esc(i.name)} (${esc(i.sku)})</option>`).join('');
+
+    openModal('Add Product Mapping', `
+      <div class="form-group">
+        <label class="form-label">NEXRAY Item *</label>
+        <select class="form-select" id="mapItem">${itemOptions}</select>
+      </div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Channel SKU</label>
+          <input type="text" class="form-input" id="mapChannelSku" placeholder="FAB-BLK-GREY">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Channel Product ID</label>
+          <input type="text" class="form-input" id="mapChannelProductId" placeholder="shopify-prod-123">
+        </div>
+      </div>
+    `, `
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitAddMapping('${channelId}')">Add Mapping</button>
+    `);
+  });
+}
+
+async function submitAddMapping(channelId) {
+  const itemId = document.getElementById('mapItem').value;
+  if (!itemId) { toast('Select an item', 'warning'); return; }
+
+  const result = await apiPost('/channel_mappings', {
+    channel_connection_id: channelId,
+    nexray_item_id: itemId,
+    channel_sku: document.getElementById('mapChannelSku').value.trim() || null,
+    channel_product_id: document.getElementById('mapChannelProductId').value.trim() || null
+  });
+
+  if (result && result.success) {
+    closeModal();
+    toast('Product mapping added', 'success');
+    loadChannels();
+  } else {
+    toast(result?.detail || 'Failed to add mapping', 'error');
+  }
 }
 
 // ===== INVENTORY =====
 async function loadInventory() {
   const el = document.getElementById('page-inventory');
-  el.innerHTML = skeletonTable(10);
+  el.innerHTML = '<div class="loading-skeleton skeleton-row"></div>'.repeat(5);
   const data = await api('/inventory');
-  if (!data?.lots?.length) { el.innerHTML = emptyState('No inventory'); return; }
+  if (!data) return;
+
   el.innerHTML = `
+    <div class="kpi-grid">
+      <div class="kpi-card accent"><div class="kpi-label">Active Lots</div><div class="kpi-value">${data.lots.length}</div></div>
+      <div class="kpi-card"><div class="kpi-label">Total On Hand</div><div class="kpi-value">${fmtQty(data.lots.reduce((s, l) => s + (l.qty_on_hand || 0), 0))}m</div></div>
+      <div class="kpi-card"><div class="kpi-label">Total Reserved</div><div class="kpi-value">${fmtQty(data.lots.reduce((s, l) => s + (l.qty_reserved || 0), 0))}m</div></div>
+      <div class="kpi-card success"><div class="kpi-label">Total Available</div><div class="kpi-value">${fmtQty(data.lots.reduce((s, l) => s + (l.qty_available || 0), 0))}m</div></div>
+    </div>
     <div class="card">
-      <div class="card-header"><div class="card-title">Lots & Rolls</div><div class="card-subtitle">${data.lots.length} lots</div></div>
-      <div class="table-wrapper"><table>
-        <thead><tr><th>Lot ID</th><th>Item</th><th>On Hand</th><th>Reserved</th><th>Available</th><th>Location</th><th>Status</th></tr></thead>
-        <tbody>${data.lots.map(l => `<tr>
-          <td>${trackingId(l.lot_tracking)}</td>
-          <td>${l.item_name || '—'}</td>
-          <td>${fmtQty(l.qty_on_hand)}m</td>
-          <td>${fmtQty(l.qty_reserved)}m</td>
-          <td>${fmtQty(l.qty_available)}m</td>
-          <td><span class="location-path">${l.location_path || '—'}</span></td>
-          <td>${badge(l.status)}</td>
-        </tr>`).join('')}</tbody>
-      </table></div>
-    </div>`;
+      <div class="card-header">
+        <div><div class="card-title">Inventory Lots</div><div class="card-subtitle">Roll and lot-level inventory tracking</div></div>
+      </div>
+      <div class="table-wrapper">
+        <table>
+          <thead><tr><th>Tracking ID</th><th>Item</th><th>SKU</th><th>Type</th><th>Lot/Shade</th><th>Original</th><th>On Hand</th><th>Reserved</th><th>Available</th><th>Warehouse</th><th>Location</th><th>Status</th><th>Confidence</th></tr></thead>
+          <tbody>
+            ${data.lots.map(l => {
+              const lowStock = l.qty_on_hand < 10 && l.status === 'active';
+              return `<tr ${lowStock ? 'style="background:var(--color-warning-subtle)"' : ''}>
+                <td>${trackingId(l.tracking_id)}</td>
+                <td>${l.item_name || '\u2014'}</td>
+                <td>${mono(l.sku)}</td>
+                <td>${badge(l.item_type)}</td>
+                <td>${mono((l.lot_no || '') + (l.shade_code ? ' / ' + l.shade_code : ''))}</td>
+                <td>${fmtQty(l.qty_original)}</td>
+                <td style="font-weight:600">${fmtQty(l.qty_on_hand)}</td>
+                <td>${fmtQty(l.qty_reserved)}</td>
+                <td style="font-weight:600;color:var(--color-success)">${fmtQty(l.qty_available)}</td>
+                <td>${mono(l.warehouse_code)}</td>
+                <td>${l.location_barcode ? `<span class="location-path">${l.location_barcode}</span>` : '\u2014'}</td>
+                <td>${badge(l.status)}</td>
+                <td>${badge(l.qty_confidence)}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
 }
 
 // ===== WAREHOUSES =====
 async function loadWarehouses() {
   const el = document.getElementById('page-warehouses');
-  el.innerHTML = '<div class="loading-skeleton skeleton-kpi" style="height:200px"></div>';
-  const data = await api('/warehouses');
-  if (!data?.warehouses?.length) { el.innerHTML = emptyState('No warehouses'); return; }
+  el.innerHTML = '<div class="loading-skeleton skeleton-row"></div>'.repeat(3);
+  const whData = await api('/warehouses', { entity_id: 'all' });
+  if (!whData) return;
+
   el.innerHTML = `
-    <div class="warehouse-grid">${data.warehouses.map(w => `
-      <div class="rack-card">
-        <div class="rack-name">${w.location_path}</div>
-        <div class="rack-stats">${w.total_lots} lots · ${fmtQty(w.total_qty)}m</div>
-        <div class="rack-bar"><div class="rack-bar-fill" style="width:${Math.min(100,(w.total_qty/100)*100)}%"></div></div>
-      </div>`).join('')}
-    </div>`;
+    <div class="page-action-bar">
+      <div class="page-action-bar-left"></div>
+      <div class="page-action-bar-right">
+        <button class="btn btn-primary" onclick="showCreateWarehouseModal()">+ New Warehouse</button>
+      </div>
+    </div>
+    <div class="kpi-grid">
+      ${whData.warehouses.map(w => `
+        <div class="kpi-card">
+          <div class="kpi-label">${w.name} ${statusDot(w.is_active)}</div>
+          <div class="kpi-value">${w.active_lots} lots</div>
+          <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:var(--space-1)">${fmtQty(w.total_stock)}m in stock &middot; ${w.code}</div>
+          <div style="margin-top:var(--space-2)">
+            <button class="btn btn-sm btn-ghost" onclick="showEditWarehouseModal('${w.id}','${esc(w.name)}','${esc(w.code)}','${esc(w.address || '')}')">Edit</button>
+            <button class="btn btn-sm btn-ghost" onclick="loadLocationsForWarehouse('${w.id}','${esc(w.name)}')">View Locations</button>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+    <div id="warehouse-locations"></div>
+  `;
+
+  if (whData.warehouses.length > 0) {
+    await loadLocationsForWarehouse(whData.warehouses[0].id, whData.warehouses[0].name);
+  }
 }
 
-// ===== MOVEMENTS =====
+async function loadLocationsForWarehouse(whId, whName) {
+  const locData = await api('/locations', { warehouse_id: whId });
+  if (!locData) return;
+  const container = document.getElementById('warehouse-locations');
+
+  container.innerHTML = `
+    <div class="card">
+      <div class="card-header">
+        <div><div class="card-title">Locations \u2014 ${esc(whName)}</div><div class="card-subtitle">Rack/bin hierarchy</div></div>
+        <button class="btn btn-sm btn-secondary" onclick="showCreateLocationModal('${whId}')">+ Add Location</button>
+      </div>
+      <div style="padding:var(--space-4)">
+        <div class="warehouse-grid">
+          ${locData.locations.map(l => {
+            const pct = l.capacity_qty ? Math.min((l.total_qty / l.capacity_qty) * 100, 100) : (l.lot_count > 0 ? 50 : 0);
+            return `<div class="rack-card">
+              <div class="rack-name">${l.location_barcode || l.rack_code}</div>
+              <div class="rack-stats">${l.lot_count} lots &middot; ${fmtQty(l.total_qty)}m</div>
+              <div style="font-size:10px;color:var(--color-text-faint);margin-top:2px">${badge(l.location_type)}</div>
+              <div class="rack-bar"><div class="rack-bar-fill" style="width:${pct}%"></div></div>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function showCreateWarehouseModal() {
+  openModal('New Warehouse', `
+    <div class="form-grid">
+      <div class="form-group">
+        <label class="form-label">Name *</label>
+        <input type="text" class="form-input" id="whName" placeholder="Manila Warehouse">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Code *</label>
+        <input type="text" class="form-input" id="whCode" placeholder="MNL-01">
+      </div>
+      <div class="form-group full">
+        <label class="form-label">Address</label>
+        <input type="text" class="form-input" id="whAddress" placeholder="123 Main St, Manila">
+      </div>
+    </div>
+  `, `
+    <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+    <button class="btn btn-primary" onclick="submitCreateWarehouse()">Create</button>
+  `);
+}
+
+async function submitCreateWarehouse() {
+  const name = document.getElementById('whName').value.trim();
+  const code = document.getElementById('whCode').value.trim();
+  if (!name || !code) { toast('Name and code are required', 'warning'); return; }
+
+  const result = await apiPost('/warehouses', {
+    entity_id: currentEntity,
+    name,
+    code,
+    address: document.getElementById('whAddress').value.trim() || null
+  });
+
+  if (result && result.success) {
+    closeModal();
+    toast('Warehouse created', 'success');
+    loadWarehouses();
+  } else {
+    toast(result?.detail || 'Failed', 'error');
+  }
+}
+
+function showEditWarehouseModal(id, name, code, address) {
+  openModal('Edit Warehouse', `
+    <div class="form-grid">
+      <div class="form-group">
+        <label class="form-label">Name *</label>
+        <input type="text" class="form-input" id="whEditName" value="${esc(name)}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Code *</label>
+        <input type="text" class="form-input" id="whEditCode" value="${esc(code)}">
+      </div>
+      <div class="form-group full">
+        <label class="form-label">Address</label>
+        <input type="text" class="form-input" id="whEditAddress" value="${esc(address)}">
+      </div>
+    </div>
+  `, `
+    <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+    <button class="btn btn-primary" onclick="submitEditWarehouse('${id}')">Save</button>
+  `);
+}
+
+async function submitEditWarehouse(id) {
+  const result = await apiPut(`/warehouses/${id}`, {
+    name: document.getElementById('whEditName').value.trim(),
+    code: document.getElementById('whEditCode').value.trim(),
+    address: document.getElementById('whEditAddress').value.trim() || null
+  });
+  if (result && result.success) {
+    closeModal();
+    toast('Warehouse updated', 'success');
+    loadWarehouses();
+  } else {
+    toast(result?.detail || 'Failed', 'error');
+  }
+}
+
+function showCreateLocationModal(warehouseId) {
+  openModal('New Location', `
+    <div class="form-grid">
+      <div class="form-group">
+        <label class="form-label">Rack Code *</label>
+        <input type="text" class="form-input" id="locRack" placeholder="R01">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Location Barcode</label>
+        <input type="text" class="form-input" id="locBarcode" placeholder="MNL-A1-R01-1-B01">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Zone</label>
+        <input type="text" class="form-input" id="locZone" placeholder="A">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Aisle</label>
+        <input type="text" class="form-input" id="locAisle" placeholder="1">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Level</label>
+        <input type="text" class="form-input" id="locLevel" placeholder="1">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Type</label>
+        <select class="form-select" id="locType">
+          <option value="rack">Rack</option>
+          <option value="bin">Bin</option>
+          <option value="staging">Staging</option>
+          <option value="dispatch">Dispatch</option>
+          <option value="overflow">Overflow</option>
+        </select>
+      </div>
+    </div>
+  `, `
+    <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+    <button class="btn btn-primary" onclick="submitCreateLocation('${warehouseId}')">Create</button>
+  `);
+}
+
+async function submitCreateLocation(warehouseId) {
+  const rack = document.getElementById('locRack').value.trim();
+  if (!rack) { toast('Rack code required', 'warning'); return; }
+
+  const result = await apiPost('/locations', {
+    warehouse_id: warehouseId,
+    rack_code: rack,
+    location_barcode: document.getElementById('locBarcode').value.trim() || null,
+    zone_code: document.getElementById('locZone').value.trim() || null,
+    aisle_code: document.getElementById('locAisle').value.trim() || null,
+    level_code: document.getElementById('locLevel').value.trim() || null,
+    location_type: document.getElementById('locType').value
+  });
+
+  if (result && result.success) {
+    closeModal();
+    toast('Location created', 'success');
+    loadWarehouses();
+  } else {
+    toast(result?.detail || 'Failed', 'error');
+  }
+}
+
+// ===== MOVEMENT LEDGER =====
 async function loadMovements() {
   const el = document.getElementById('page-movements');
-  el.innerHTML = skeletonTable(15);
+  el.innerHTML = '<div class="loading-skeleton skeleton-row"></div>'.repeat(5);
   const data = await api('/movements');
-  if (!data?.movements?.length) { el.innerHTML = emptyState('No movements'); return; }
+  if (!data) return;
+
   el.innerHTML = `
     <div class="card">
-      <div class="card-header"><div class="card-title">Movement Ledger</div><div class="card-subtitle">${data.movements.length} entries</div></div>
-      <div class="table-wrapper"><table>
-        <thead><tr><th>Type</th><th>Item</th><th>Lot</th><th>Delta</th><th>Before</th><th>After</th><th>Location</th><th>By</th><th>Time</th></tr></thead>
-        <tbody>${data.movements.map(m => `<tr>
-          <td><span class="movement-type ${m.movement_type}">${m.movement_type}</span></td>
-          <td>${m.item_name || '—'}</td>
-          <td>${mono(m.lot_tracking)}</td>
-          <td>${qtyDelta(m.qty_delta)}</td>
-          <td>${fmtQty(m.qty_before)}</td>
-          <td>${fmtQty(m.qty_after)}</td>
-          <td><span class="location-path">${m.location_path || '—'}</span></td>
-          <td>${mono(m.action_by)}</td>
-          <td>${fmtDate(m.action_at)}</td>
-        </tr>`).join('')}</tbody>
-      </table></div>
-    </div>`;
+      <div class="card-header">
+        <div><div class="card-title">Inventory Movement Ledger</div><div class="card-subtitle">Immutable, append-only record of all inventory changes</div></div>
+      </div>
+      <div class="table-wrapper">
+        <table>
+          <thead><tr><th>ID</th><th>Type</th><th>Item</th><th>Tracking ID</th><th>Delta</th><th>Before</th><th>After</th><th>Reason</th><th>By</th><th>Channel</th><th>Time</th></tr></thead>
+          <tbody>
+            ${data.movements.map(m => `<tr>
+              <td>${mono(m.id.substring(0, 8))}</td>
+              <td><span class="movement-type ${m.movement_type}">${m.movement_type}</span></td>
+              <td>${m.item_name || '\u2014'}</td>
+              <td>${trackingId(m.lot_tracking || m.tracking_id)}</td>
+              <td>${qtyDelta(m.qty_delta)}</td>
+              <td>${fmtQty(m.qty_before)}</td>
+              <td>${fmtQty(m.qty_after)}</td>
+              <td>${m.reason_code || '\u2014'}</td>
+              <td>${mono(m.action_by)}</td>
+              <td>${badge(m.source_channel || 'web')}</td>
+              <td>${fmtDate(m.action_at)}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
 }
 
-// ===== ADJUSTMENTS =====
+// ===== PUTAWAY =====
+async function loadPutaway() {
+  const el = document.getElementById('page-putaway');
+
+  // Load lots and locations for the form
+  const [invData, whData] = await Promise.all([
+    api('/inventory', { status: 'active' }),
+    api('/warehouses', { entity_id: 'all' })
+  ]);
+
+  const lots = invData ? invData.lots : [];
+  const warehouses = whData ? whData.warehouses : [];
+
+  el.innerHTML = `
+    <div class="card" style="margin-bottom:var(--space-6)">
+      <div class="card-header">
+        <div><div class="card-title">Putaway Lot</div><div class="card-subtitle">Move a lot to a specific storage location</div></div>
+      </div>
+      <div style="padding:var(--space-5)">
+        <div class="putaway-form-wrap">
+          <div class="form-group">
+            <label class="form-label">Lot (Tracking ID) *</label>
+            <select class="form-select" id="putawayLot">
+              <option value="">Select lot\u2026</option>
+              ${lots.map(l => `<option value="${esc(l.tracking_id)}">${esc(l.tracking_id)} \u2014 ${esc(l.item_name || '')} (${esc(l.location_barcode || 'no loc')})</option>`).join('')}
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Warehouse *</label>
+            <select class="form-select" id="putawayWh" onchange="loadPutawayLocations(this.value)">
+              ${warehouses.map(w => `<option value="${w.id}">${esc(w.name)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Target Location *</label>
+            <select class="form-select" id="putawayLoc">
+              <option value="">Select warehouse first\u2026</option>
+            </select>
+          </div>
+          <div class="form-group" style="display:flex;align-items:flex-end">
+            <button class="btn btn-primary" onclick="submitPutaway()" style="width:100%;justify-content:center">Execute Putaway</button>
+          </div>
+        </div>
+        <div id="putawayResult"></div>
+      </div>
+    </div>
+  `;
+
+  // Load locations for first warehouse
+  if (warehouses.length > 0) {
+    loadPutawayLocations(warehouses[0].id);
+  }
+}
+
+async function loadPutawayLocations(warehouseId) {
+  const locData = await api('/locations', { warehouse_id: warehouseId });
+  const sel = document.getElementById('putawayLoc');
+  if (sel && locData) {
+    sel.innerHTML = `<option value="">Select location\u2026</option>` +
+      locData.locations.map(l => `<option value="${l.id}">${esc(l.location_barcode || l.rack_code)} \u2014 ${l.lot_count} lots</option>`).join('');
+  }
+}
+
+async function submitPutaway() {
+  const trackingId = document.getElementById('putawayLot').value;
+  const locationId = document.getElementById('putawayLoc').value;
+  const resultEl = document.getElementById('putawayResult');
+
+  if (!trackingId) { toast('Select a lot', 'warning'); return; }
+  if (!locationId) { toast('Select a target location', 'warning'); return; }
+
+  const result = await apiPost('/putaway', { tracking_id: trackingId, location_id: locationId });
+  if (result && result.success) {
+    resultEl.innerHTML = `<div class="result-banner success" style="margin-top:var(--space-4)">Putaway complete \u2014 lot moved successfully.</div>`;
+    toast('Putaway completed', 'success');
+  } else {
+    resultEl.innerHTML = `<div class="result-banner error" style="margin-top:var(--space-4)">${esc(result?.detail || 'Putaway failed')}</div>`;
+    toast(result?.detail || 'Putaway failed', 'error');
+  }
+}
+
+// ===== ADJUSTMENTS / APPROVALS =====
 async function loadAdjustments() {
   const el = document.getElementById('page-adjustments');
-  el.innerHTML = skeletonTable(10);
+  el.innerHTML = '<div class="loading-skeleton skeleton-row"></div>'.repeat(3);
   const data = await api('/adjustments');
-  if (!data?.adjustments?.length) { el.innerHTML = emptyState('No pending approvals'); return; }
+  if (!data) return;
+
   el.innerHTML = `
+    <div class="tab-bar">
+      <button class="tab-btn active" onclick="filterAdj('all',this)">All</button>
+      <button class="tab-btn" onclick="filterAdj('pending',this)">Pending</button>
+      <button class="tab-btn" onclick="filterAdj('approved',this)">Approved</button>
+      <button class="tab-btn" onclick="filterAdj('rejected',this)">Rejected</button>
+    </div>
     <div class="card">
-      <div class="card-header"><div class="card-title">Adjustment Approvals</div><div class="card-subtitle">${data.adjustments.length} items</div></div>
-      <div class="table-wrapper"><table>
-        <thead><tr><th>Adj ID</th><th>Item</th><th>Lot</th><th>Delta</th><th>Reason</th><th>Status</th><th>Requested By</th><th>Time</th></tr></thead>
-        <tbody>${data.adjustments.map(a => `<tr>
-          <td>${trackingId(a.adjustment_id)}</td>
-          <td>${a.item_name || '—'}</td>
-          <td>${mono(a.lot_tracking)}</td>
-          <td>${qtyDelta(a.qty_delta)}</td>
-          <td>${a.reason || '—'}</td>
-          <td>${badge(a.status)}</td>
-          <td>${mono(a.requested_by)}</td>
-          <td>${fmtDate(a.requested_at)}</td>
-        </tr>`).join('')}</tbody>
-      </table></div>
-    </div>`;
+      <div class="card-header">
+        <div><div class="card-title">Adjustment Requests</div><div class="card-subtitle">Approval-gated operational controls</div></div>
+      </div>
+      <div class="table-wrapper">
+        <table>
+          <thead><tr><th>ID</th><th>Type</th><th>Qty Before</th><th>Qty After</th><th>Reason</th><th>Notes</th><th>Status</th><th>Requested By</th><th>Approved By</th><th>Actions</th></tr></thead>
+          <tbody id="adj-tbody">
+            ${data.adjustments.map(a => `<tr data-status="${a.status}">
+              <td>${mono(a.id.substring(0, 8))}</td>
+              <td>${badge(a.adjustment_type)}</td>
+              <td>${fmtQty(a.qty_before)}</td>
+              <td>${fmtQty(a.qty_after)}</td>
+              <td>${mono(a.reason_code)}</td>
+              <td style="max-width:200px;font-size:11px">${a.notes || '\u2014'}</td>
+              <td>${badge(a.status)}</td>
+              <td>${mono(a.requested_by)}</td>
+              <td>${mono(a.approved_by || '\u2014')}</td>
+              <td>
+                ${a.status === 'pending' ? `
+                  <button class="btn btn-sm btn-success" onclick="approveAdj('${a.id}')">Approve</button>
+                  <button class="btn btn-sm btn-error" onclick="rejectAdj('${a.id}')">Reject</button>
+                ` : ''}
+              </td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function filterAdj(status, btn) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.querySelectorAll('#adj-tbody tr').forEach(tr => {
+    tr.style.display = (status === 'all' || tr.dataset.status === status) ? '' : 'none';
+  });
+}
+
+async function approveAdj(id) {
+  const result = await apiPost('/approve_adjustment', { id });
+  if (result && result.success) {
+    toast('Adjustment approved', 'success');
+    loadAdjustments();
+  } else {
+    toast('Failed to approve', 'error');
+  }
+}
+
+async function rejectAdj(id) {
+  const result = await apiPost('/reject_adjustment', { id });
+  if (result && result.success) {
+    toast('Adjustment rejected', 'warning');
+    loadAdjustments();
+  } else {
+    toast('Failed to reject', 'error');
+  }
 }
 
 // ===== FINDINGS =====
 async function loadFindings() {
   const el = document.getElementById('page-findings');
-  el.innerHTML = skeletonTable(10);
+  el.innerHTML = '<div class="loading-skeleton skeleton-row"></div>'.repeat(3);
   const data = await api('/findings');
-  if (!data?.findings?.length) { el.innerHTML = emptyState('No findings'); return; }
+  if (!data) return;
+
   el.innerHTML = `
+    <div class="page-action-bar">
+      <div class="page-action-bar-left">
+        <div class="tab-bar">
+          <button class="tab-btn active" onclick="filterFindings('all',this)">All</button>
+          <button class="tab-btn" onclick="filterFindings('open',this)">Open</button>
+          <button class="tab-btn" onclick="filterFindings('resolved',this)">Resolved</button>
+        </div>
+      </div>
+      <div class="page-action-bar-right">
+        <button class="btn btn-secondary" onclick="runReconciliationFromFindings()">Run Reconciliation</button>
+      </div>
+    </div>
+    <div id="reconResult"></div>
     <div class="card">
-      <div class="card-header"><div class="card-title">Reconciliation Findings</div><div class="card-subtitle">${data.findings.length} findings</div></div>
-      <div class="table-wrapper"><table>
-        <thead><tr><th>ID</th><th>Type</th><th>Severity</th><th>Description</th><th>Status</th><th>Lot</th><th>Created</th></tr></thead>
-        <tbody>${data.findings.map(f => `<tr>
-          <td>${trackingId(f.finding_id)}</td>
-          <td>${badge(f.finding_type)}</td>
-          <td>${badge(f.severity)}</td>
-          <td style="max-width:350px">${f.description || '—'}</td>
-          <td>${badge(f.resolution_status)}</td>
-          <td>${mono(f.lot_tracking)}</td>
-          <td>${fmtDate(f.created_at)}</td>
-        </tr>`).join('')}</tbody>
-      </table></div>
-    </div>`;
+      <div class="card-header">
+        <div><div class="card-title">Reconciliation Findings</div><div class="card-subtitle">Exceptions requiring investigation</div></div>
+      </div>
+      <div class="table-wrapper">
+        <table>
+          <thead><tr><th>Type</th><th>Severity</th><th>Description</th><th>Resource</th><th>Status</th><th>Resolved By</th><th>Created</th><th>Actions</th></tr></thead>
+          <tbody id="findings-tbody">
+            ${data.findings.map(f => `<tr data-status="${f.resolution_status}">
+              <td>${badge(f.finding_type)}</td>
+              <td>${badge(f.severity)}</td>
+              <td style="max-width:350px;font-size:11px">${f.description || '\u2014'}</td>
+              <td>${mono(f.resource_type ? f.resource_type + ':' + (f.resource_id || '').substring(0, 8) : '\u2014')}</td>
+              <td>${badge(f.resolution_status)}</td>
+              <td>${mono(f.resolved_by || '\u2014')}</td>
+              <td>${fmtDate(f.created_at)}</td>
+              <td>
+                ${f.resolution_status === 'open' ? `<button class="btn btn-sm btn-primary" onclick="resolveFinding('${f.id}')">Resolve</button>` : ''}
+              </td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function filterFindings(status, btn) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.querySelectorAll('#findings-tbody tr').forEach(tr => {
+    tr.style.display = (status === 'all' || tr.dataset.status === status) ? '' : 'none';
+  });
+}
+
+async function resolveFinding(id) {
+  const result = await apiPost('/resolve_finding', { id });
+  if (result && result.success) {
+    toast('Finding resolved', 'success');
+    loadFindings();
+  }
+}
+
+async function runReconciliationFromFindings() {
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = 'Running\u2026';
+  const result = await apiPost('/reconciliation/run', { entity_id: currentEntity, run_type: 'manual' });
+  btn.disabled = false;
+  btn.textContent = 'Run Reconciliation';
+  const resEl = document.getElementById('reconResult');
+  if (result && result.success) {
+    if (resEl) resEl.innerHTML = `<div class="result-banner ${result.findings_count > 0 ? 'warning' : 'success'}">Reconciliation complete: ${result.findings_count} finding(s) found</div>`;
+    loadFindings();
+  } else {
+    if (resEl) resEl.innerHTML = '<div class="result-banner error">Reconciliation failed</div>';
+  }
 }
 
 // ===== INTEGRATIONS =====
 async function loadIntegrations() {
   const el = document.getElementById('page-integrations');
-  el.innerHTML = skeletonTable(5);
-  const data = await api('/integrations');
-  if (!data?.events?.length) { el.innerHTML = emptyState('No integration events'); return; }
+  el.innerHTML = '<div class="loading-skeleton skeleton-row"></div>'.repeat(3);
+  const data = await api('/integration_events');
+  if (!data) return;
+
   el.innerHTML = `
+    <div class="detail-grid">
+      <div class="info-card">
+        <h4>QuickBooks Desktop 2024</h4>
+        <div class="info-row"><span class="label">Connector Status</span><span class="value">${badge('active')}</span></div>
+        <div class="info-row"><span class="label">Pattern</span><span class="value">Outbox Queue</span></div>
+        <div class="info-row"><span class="label">Protocol</span><span class="value">QB SDK / QBFC</span></div>
+        <div class="info-row"><span class="label">Last Sync</span><span class="value">\u2014</span></div>
+      </div>
+      <div class="info-card">
+        <h4>Integration Health</h4>
+        <div class="info-row"><span class="label">Pending Events</span><span class="value">${data.events.filter(e => e.status === 'pending').length}</span></div>
+        <div class="info-row"><span class="label">Applied</span><span class="value">${data.events.filter(e => e.status === 'applied').length}</span></div>
+        <div class="info-row"><span class="label">Failed</span><span class="value">${data.events.filter(e => e.status === 'failed').length}</span></div>
+        <div class="info-row"><span class="label">Dead Letter</span><span class="value">${data.events.filter(e => e.status === 'dead_letter').length}</span></div>
+      </div>
+    </div>
     <div class="card">
-      <div class="card-header"><div class="card-title">QBD Integration Events</div><div class="card-subtitle">${data.events.length} events</div></div>
-      <div class="table-wrapper"><table>
-        <thead><tr><th>Event ID</th><th>Type</th><th>Direction</th><th>Status</th><th>Entity</th><th>Payload</th><th>Created</th></tr></thead>
-        <tbody>${data.events.map(e => `<tr>
-          <td>${trackingId(e.event_id)}</td>
-          <td>${badge(e.event_type)}</td>
-          <td>${badge(e.direction)}</td>
-          <td>${badge(e.status)}</td>
-          <td>${mono(e.entity_id)}</td>
-          <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${e.payload || ''}">${e.payload ? e.payload.substring(0,60)+'…' : '—'}</td>
-          <td>${fmtDate(e.created_at)}</td>
-        </tr>`).join('')}</tbody>
-      </table></div>
-    </div>`;
+      <div class="card-header">
+        <div><div class="card-title">Integration Event Queue</div><div class="card-subtitle">Outbox events for QuickBooks sync</div></div>
+      </div>
+      <div class="table-wrapper">
+        <table>
+          <thead><tr><th>ID</th><th>Type</th><th>Direction</th><th>Status</th><th>Retries</th><th>Error</th><th>Created</th><th>Processed</th><th>Actions</th></tr></thead>
+          <tbody>
+            ${data.events.map(e => `<tr>
+              <td>${mono(e.id.substring(0, 8))}</td>
+              <td>${mono(e.event_type)}</td>
+              <td>${badge(e.direction)}</td>
+              <td>${badge(e.status)}</td>
+              <td>${e.retry_count}</td>
+              <td style="max-width:200px;font-size:11px">${e.error_message || '\u2014'}</td>
+              <td>${fmtDate(e.created_at)}</td>
+              <td>${e.processed_at ? fmtDate(e.processed_at) : '\u2014'}</td>
+              <td>
+                ${e.status === 'failed' || e.status === 'dead_letter' ? `<button class="btn btn-sm btn-secondary" onclick="retryIntegration('${e.id}')">Retry</button>` : ''}
+              </td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
 }
 
-// ===== USERS =====
+async function retryIntegration(id) {
+  const result = await apiPost('/retry_integration', { id });
+  if (result && result.success) {
+    toast('Integration event queued for retry', 'info');
+    loadIntegrations();
+  }
+}
+
+// ===== ITEMS =====
+async function loadItems() {
+  const el = document.getElementById('page-items');
+  el.innerHTML = '<div class="loading-skeleton skeleton-row"></div>'.repeat(3);
+  const data = await api('/items');
+  if (!data) return;
+
+  el.innerHTML = `
+    <div class="page-action-bar">
+      <div class="page-action-bar-left"><span style="font-size:var(--text-xs);color:var(--color-text-muted)">${data.items.length} items</span></div>
+      <div class="page-action-bar-right">
+        <button class="btn btn-primary" onclick="showCreateItemModal()">+ New Item</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div><div class="card-title">Items</div><div class="card-subtitle">Master item catalog</div></div>
+      </div>
+      <div class="table-wrapper">
+        <table>
+          <thead><tr><th>SKU</th><th>Name</th><th>Type</th><th>UOM</th><th>Category</th><th>Status</th><th>Actions</th></tr></thead>
+          <tbody>
+            ${data.items.map(i => `<tr>
+              <td>${mono(i.sku)}</td>
+              <td style="font-weight:500">${i.name}</td>
+              <td>${badge(i.item_type)}</td>
+              <td>${i.base_uom || '\u2014'}</td>
+              <td>${i.category || '\u2014'}</td>
+              <td>${statusDot(i.is_active)} ${i.is_active ? 'Active' : 'Inactive'}</td>
+              <td>
+                <button class="btn btn-sm btn-ghost" onclick="showEditItemModal('${i.id}','${esc(i.sku)}','${esc(i.name)}','${i.item_type}','${i.base_uom || 'meter'}','${esc(i.category || '')}')">Edit</button>
+              </td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function showCreateItemModal() {
+  openModal('New Item', `
+    <div class="form-grid">
+      <div class="form-group">
+        <label class="form-label">SKU *</label>
+        <input type="text" class="form-input" id="itmSku" placeholder="FAB-BLK-001">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Name *</label>
+        <input type="text" class="form-input" id="itmName" placeholder="Blackout Fabric - Ivory">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Item Type *</label>
+        <select class="form-select" id="itmType">
+          <option value="fabric">Fabric</option>
+          <option value="component">Component</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Base UOM</label>
+        <select class="form-select" id="itmUom">
+          <option value="meter">Meter</option>
+          <option value="piece">Piece</option>
+          <option value="pack">Pack</option>
+          <option value="pair">Pair</option>
+          <option value="yard">Yard</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Category</label>
+        <input type="text" class="form-input" id="itmCategory" placeholder="Curtains">
+      </div>
+      <div class="form-group full">
+        <label class="form-label">Description</label>
+        <textarea class="form-textarea" id="itmDesc" placeholder="Optional description" rows="2"></textarea>
+      </div>
+    </div>
+  `, `
+    <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+    <button class="btn btn-primary" onclick="submitCreateItem()">Create Item</button>
+  `);
+}
+
+async function submitCreateItem() {
+  const sku = document.getElementById('itmSku').value.trim();
+  const name = document.getElementById('itmName').value.trim();
+  if (!sku || !name) { toast('SKU and name are required', 'warning'); return; }
+
+  const result = await apiPost('/items', {
+    entity_id: currentEntity,
+    sku,
+    name,
+    item_type: document.getElementById('itmType').value,
+    base_uom: document.getElementById('itmUom').value,
+    category: document.getElementById('itmCategory').value.trim() || null,
+    description: document.getElementById('itmDesc').value.trim() || null
+  });
+
+  if (result && result.success) {
+    closeModal();
+    toast('Item created', 'success');
+    loadItems();
+  } else {
+    toast(result?.detail || 'Failed to create item', 'error');
+  }
+}
+
+function showEditItemModal(id, sku, name, type, uom, category) {
+  openModal('Edit Item', `
+    <div class="form-grid">
+      <div class="form-group">
+        <label class="form-label">SKU *</label>
+        <input type="text" class="form-input" id="itmEditSku" value="${esc(sku)}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Name *</label>
+        <input type="text" class="form-input" id="itmEditName" value="${esc(name)}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Item Type *</label>
+        <select class="form-select" id="itmEditType">
+          <option value="fabric" ${type === 'fabric' ? 'selected' : ''}>Fabric</option>
+          <option value="component" ${type === 'component' ? 'selected' : ''}>Component</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Base UOM</label>
+        <select class="form-select" id="itmEditUom">
+          <option value="meter" ${uom === 'meter' ? 'selected' : ''}>Meter</option>
+          <option value="piece" ${uom === 'piece' ? 'selected' : ''}>Piece</option>
+          <option value="pack" ${uom === 'pack' ? 'selected' : ''}>Pack</option>
+          <option value="pair" ${uom === 'pair' ? 'selected' : ''}>Pair</option>
+          <option value="yard" ${uom === 'yard' ? 'selected' : ''}>Yard</option>
+        </select>
+      </div>
+      <div class="form-group full">
+        <label class="form-label">Category</label>
+        <input type="text" class="form-input" id="itmEditCategory" value="${esc(category)}">
+      </div>
+    </div>
+  `, `
+    <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+    <button class="btn btn-primary" onclick="submitEditItem('${id}')">Save</button>
+  `);
+}
+
+async function submitEditItem(id) {
+  const result = await apiPut(`/items/${id}`, {
+    sku: document.getElementById('itmEditSku').value.trim(),
+    name: document.getElementById('itmEditName').value.trim(),
+    item_type: document.getElementById('itmEditType').value,
+    base_uom: document.getElementById('itmEditUom').value,
+    category: document.getElementById('itmEditCategory').value.trim() || null
+  });
+
+  if (result && result.success) {
+    closeModal();
+    toast('Item updated', 'success');
+    loadItems();
+  } else {
+    toast(result?.detail || 'Failed', 'error');
+  }
+}
+
+// ===== SUPPLIERS =====
+async function loadSuppliers() {
+  const el = document.getElementById('page-suppliers');
+  el.innerHTML = '<div class="loading-skeleton skeleton-row"></div>'.repeat(3);
+  const data = await api('/suppliers');
+  if (!data) return;
+
+  el.innerHTML = `
+    <div class="page-action-bar">
+      <div class="page-action-bar-left"><span style="font-size:var(--text-xs);color:var(--color-text-muted)">${data.suppliers.length} suppliers</span></div>
+      <div class="page-action-bar-right">
+        <button class="btn btn-primary" onclick="showCreateSupplierModal()">+ New Supplier</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div><div class="card-title">Suppliers</div><div class="card-subtitle">Supplier master list</div></div>
+      </div>
+      <div class="table-wrapper">
+        <table>
+          <thead><tr><th>Code</th><th>Name</th><th>Contact</th><th>Status</th><th>Actions</th></tr></thead>
+          <tbody>
+            ${data.suppliers.map(s => `<tr>
+              <td>${mono(s.code)}</td>
+              <td style="font-weight:500">${esc(s.name)}</td>
+              <td style="font-size:11px">${s.contact_info || '\u2014'}</td>
+              <td>${statusDot(s.is_active)} ${s.is_active ? 'Active' : 'Inactive'}</td>
+              <td>
+                <button class="btn btn-sm btn-ghost" onclick="showEditSupplierModal('${s.id}','${esc(s.name)}','${esc(s.code || '')}','${esc(s.contact_info || '')}')">Edit</button>
+              </td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function showCreateSupplierModal() {
+  openModal('New Supplier', `
+    <div class="form-grid">
+      <div class="form-group">
+        <label class="form-label">Name *</label>
+        <input type="text" class="form-input" id="supName" placeholder="Guangzhou Textile Co.">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Code</label>
+        <input type="text" class="form-input" id="supCode" placeholder="GZ-TEX">
+      </div>
+      <div class="form-group full">
+        <label class="form-label">Contact Info</label>
+        <input type="text" class="form-input" id="supContact" placeholder="contact@supplier.com / +86-\u2026">
+      </div>
+    </div>
+  `, `
+    <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+    <button class="btn btn-primary" onclick="submitCreateSupplier()">Create</button>
+  `);
+}
+
+async function submitCreateSupplier() {
+  const name = document.getElementById('supName').value.trim();
+  if (!name) { toast('Name is required', 'warning'); return; }
+
+  const result = await apiPost('/suppliers', {
+    entity_id: currentEntity,
+    name,
+    code: document.getElementById('supCode').value.trim() || null,
+    contact_info: document.getElementById('supContact').value.trim() || null
+  });
+
+  if (result && result.success) {
+    closeModal();
+    toast('Supplier created', 'success');
+    loadSuppliers();
+  } else {
+    toast(result?.detail || 'Failed', 'error');
+  }
+}
+
+function showEditSupplierModal(id, name, code, contact) {
+  openModal('Edit Supplier', `
+    <div class="form-grid">
+      <div class="form-group">
+        <label class="form-label">Name *</label>
+        <input type="text" class="form-input" id="supEditName" value="${esc(name)}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Code</label>
+        <input type="text" class="form-input" id="supEditCode" value="${esc(code)}">
+      </div>
+      <div class="form-group full">
+        <label class="form-label">Contact Info</label>
+        <input type="text" class="form-input" id="supEditContact" value="${esc(contact)}">
+      </div>
+    </div>
+  `, `
+    <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+    <button class="btn btn-primary" onclick="submitEditSupplier('${id}')">Save</button>
+  `);
+}
+
+async function submitEditSupplier(id) {
+  const result = await apiPut(`/suppliers/${id}`, {
+    name: document.getElementById('supEditName').value.trim(),
+    code: document.getElementById('supEditCode').value.trim() || null,
+    contact_info: document.getElementById('supEditContact').value.trim() || null
+  });
+
+  if (result && result.success) {
+    closeModal();
+    toast('Supplier updated', 'success');
+    loadSuppliers();
+  } else {
+    toast(result?.detail || 'Failed', 'error');
+  }
+}
+
+// ===== CUSTOMERS =====
+async function loadCustomers() {
+  const el = document.getElementById('page-customers');
+  el.innerHTML = '<div class="loading-skeleton skeleton-row"></div>'.repeat(3);
+  const data = await api('/customers');
+  if (!data) return;
+
+  el.innerHTML = `
+    <div class="page-action-bar">
+      <div class="page-action-bar-left"><span style="font-size:var(--text-xs);color:var(--color-text-muted)">${data.customers.length} customers</span></div>
+      <div class="page-action-bar-right">
+        <button class="btn btn-primary" onclick="showCreateCustomerModal()">+ New Customer</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div><div class="card-title">Customers</div><div class="card-subtitle">Customer master list</div></div>
+      </div>
+      <div class="table-wrapper">
+        <table>
+          <thead><tr><th>Code</th><th>Name</th><th>Contact</th><th>Status</th><th>Actions</th></tr></thead>
+          <tbody>
+            ${data.customers.map(c => `<tr>
+              <td>${mono(c.code)}</td>
+              <td style="font-weight:500">${esc(c.name)}</td>
+              <td style="font-size:11px">${c.contact_info || '\u2014'}</td>
+              <td>${statusDot(c.is_active)} ${c.is_active ? 'Active' : 'Inactive'}</td>
+              <td>
+                <button class="btn btn-sm btn-ghost" onclick="showEditCustomerModal('${c.id}','${esc(c.name)}','${esc(c.code || '')}','${esc(c.contact_info || '')}')">Edit</button>
+              </td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function showCreateCustomerModal() {
+  openModal('New Customer', `
+    <div class="form-grid">
+      <div class="form-group">
+        <label class="form-label">Name *</label>
+        <input type="text" class="form-input" id="custName" placeholder="InterContinental Hotels">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Code</label>
+        <input type="text" class="form-input" id="custCode" placeholder="ICH">
+      </div>
+      <div class="form-group full">
+        <label class="form-label">Contact Info</label>
+        <input type="text" class="form-input" id="custContact" placeholder="contact@customer.com / +63-\u2026">
+      </div>
+    </div>
+  `, `
+    <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+    <button class="btn btn-primary" onclick="submitCreateCustomer()">Create</button>
+  `);
+}
+
+async function submitCreateCustomer() {
+  const name = document.getElementById('custName').value.trim();
+  if (!name) { toast('Name is required', 'warning'); return; }
+
+  const result = await apiPost('/customers', {
+    entity_id: currentEntity,
+    name,
+    code: document.getElementById('custCode').value.trim() || null,
+    contact_info: document.getElementById('custContact').value.trim() || null
+  });
+
+  if (result && result.success) {
+    closeModal();
+    toast('Customer created', 'success');
+    loadCustomers();
+  } else {
+    toast(result?.detail || 'Failed', 'error');
+  }
+}
+
+function showEditCustomerModal(id, name, code, contact) {
+  openModal('Edit Customer', `
+    <div class="form-grid">
+      <div class="form-group">
+        <label class="form-label">Name *</label>
+        <input type="text" class="form-input" id="custEditName" value="${esc(name)}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Code</label>
+        <input type="text" class="form-input" id="custEditCode" value="${esc(code)}">
+      </div>
+      <div class="form-group full">
+        <label class="form-label">Contact Info</label>
+        <input type="text" class="form-input" id="custEditContact" value="${esc(contact)}">
+      </div>
+    </div>
+  `, `
+    <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+    <button class="btn btn-primary" onclick="submitEditCustomer('${id}')">Save</button>
+  `);
+}
+
+async function submitEditCustomer(id) {
+  const result = await apiPut(`/customers/${id}`, {
+    name: document.getElementById('custEditName').value.trim(),
+    code: document.getElementById('custEditCode').value.trim() || null,
+    contact_info: document.getElementById('custEditContact').value.trim() || null
+  });
+
+  if (result && result.success) {
+    closeModal();
+    toast('Customer updated', 'success');
+    loadCustomers();
+  } else {
+    toast(result?.detail || 'Failed', 'error');
+  }
+}
+
+// ===== USERS & RBAC =====
 async function loadUsers() {
   const el = document.getElementById('page-users');
-  el.innerHTML = skeletonTable(5);
+  el.innerHTML = '<div class="loading-skeleton skeleton-row"></div>'.repeat(3);
   const data = await api('/users');
-  if (!data?.users?.length) { el.innerHTML = emptyState('No users'); return; }
+  if (!data) return;
+
+  const roleMap = {
+    system_admin:        { label: 'System Admin', desc: 'Full access, config, users, integrations' },
+    inventory_admin:     { label: 'Inventory Admin', desc: 'Receiving, putaway, adjustments, cycle counts' },
+    warehouse_operator:  { label: 'Warehouse Operator', desc: 'Pick, cut, scan, print within warehouse' },
+    warehouse_lead:      { label: 'Warehouse Lead', desc: 'Approve variances, unlock lines, reprint' },
+    manager:             { label: 'Manager', desc: 'Dashboards, reconciliation, high-level approvals' },
+    accounting_operator: { label: 'Accounting / QBD', desc: 'Manage QBD sync, mapping approvals' },
+  };
+
+  const isAdmin = currentUser && currentUser.role === 'system_admin';
+
   el.innerHTML = `
+    <div class="page-action-bar">
+      <div class="page-action-bar-left"></div>
+      <div class="page-action-bar-right">
+        ${isAdmin ? `<button class="btn btn-primary" onclick="showCreateUserModal()">+ Create User</button>` : ''}
+      </div>
+    </div>
+    <div class="detail-grid">
+      <div class="info-card">
+        <h4>RBAC Summary</h4>
+        ${Object.entries(roleMap).map(([k, v]) => `
+          <div class="info-row"><span class="label">${v.label}</span><span class="value">${data.users.filter(u => u.role === k).length}</span></div>
+        `).join('')}
+      </div>
+      <div class="info-card">
+        <h4>Permission Matrix</h4>
+        <div style="font-size:11px;color:var(--color-text-muted);line-height:1.6">
+          <div><strong>Import Requests:</strong> Lead, Inv Admin, Manager, Sys Admin</div>
+          <div><strong>Execute Pick/Cut:</strong> Operator, Lead, Inv Admin, Sys Admin</div>
+          <div><strong>Approve Adjustments:</strong> Lead (limited), Inv Admin, Manager, Sys Admin</div>
+          <div><strong>Force Close/Override:</strong> Lead, Inv Admin, Manager, Sys Admin</div>
+          <div><strong>Run QBD Sync:</strong> Accounting, Sys Admin</div>
+          <div><strong>Edit Mappings:</strong> Inv Admin, Accounting, Sys Admin</div>
+        </div>
+      </div>
+    </div>
     <div class="card">
-      <div class="card-header"><div class="card-title">Users & RBAC</div><div class="card-subtitle">${data.users.length} users</div></div>
-      <div class="table-wrapper"><table>
-        <thead><tr><th>User</th><th>Email</th><th>Role</th><th>Status</th><th>Entity</th><th>Last Login</th></tr></thead>
-        <tbody>${data.users.map(u => `<tr>
-          <td>${mono(u.username)}</td>
-          <td>${u.email || '—'}</td>
-          <td>${badge(u.role)}</td>
-          <td>${statusDot(u.is_active)} ${u.is_active ? 'Active' : 'Inactive'}</td>
-          <td>${mono(u.entity_id)}</td>
-          <td>${fmtDate(u.last_login)}</td>
-        </tr>`).join('')}</tbody>
-      </table></div>
-    </div>`;
+      <div class="card-header">
+        <div><div class="card-title">System Users</div><div class="card-subtitle">${data.users.length} total users</div></div>
+      </div>
+      <div class="table-wrapper">
+        <table>
+          <thead><tr><th>User</th><th>Username</th><th>Email</th><th>Role</th><th>Entity</th><th>Warehouse</th><th>Status</th>${isAdmin ? '<th>Actions</th>' : ''}</tr></thead>
+          <tbody>
+            ${data.users.map(u => `<tr>
+              <td style="font-weight:500">${esc(u.display_name)}</td>
+              <td>${mono(u.username)}</td>
+              <td style="font-size:11px">${u.email || '\u2014'}</td>
+              <td>${badge(u.role)}</td>
+              <td>${u.entity_name || '\u2014'}</td>
+              <td>${u.warehouse_name || 'All'}</td>
+              <td>${statusDot(u.is_active)} ${u.is_active ? 'Active' : 'Inactive'}</td>
+              ${isAdmin ? `<td><button class="btn btn-sm btn-ghost" onclick="showEditUserModal('${u.id}','${esc(u.display_name)}','${esc(u.email || '')}','${u.role}')">Edit</button></td>` : ''}
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
 }
 
-// ===== AUDIT =====
+function showCreateUserModal() {
+  const roles = ['system_admin','inventory_admin','warehouse_lead','warehouse_operator','manager','accounting_operator'];
+  openModal('Create User', `
+    <div class="form-grid">
+      <div class="form-group">
+        <label class="form-label">Username *</label>
+        <input type="text" class="form-input" id="newUsername" placeholder="jsmith">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Display Name *</label>
+        <input type="text" class="form-input" id="newDisplayName" placeholder="John Smith">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Email</label>
+        <input type="email" class="form-input" id="newEmail" placeholder="jsmith@nexray.local">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Role *</label>
+        <select class="form-select" id="newRole">
+          ${roles.map(r => `<option value="${r}">${r.replace(/_/g,' ')}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div class="result-banner info" style="margin-top:0">Default password: <strong>nexray2024_{username}</strong>. User should change on first login.</div>
+  `, `
+    <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+    <button class="btn btn-primary" onclick="submitCreateUser()">Create User</button>
+  `);
+}
+
+async function submitCreateUser() {
+  const username = document.getElementById('newUsername').value.trim();
+  const displayName = document.getElementById('newDisplayName').value.trim();
+  if (!username || !displayName) { toast('Username and display name required', 'warning'); return; }
+
+  const result = await apiPost('/users', {
+    username,
+    display_name: displayName,
+    email: document.getElementById('newEmail').value.trim() || null,
+    role: document.getElementById('newRole').value,
+    entity_id: currentEntity
+  });
+
+  if (result && result.success) {
+    closeModal();
+    toast(`User created: ${username}`, 'success');
+    loadUsers();
+  } else {
+    toast(result?.detail || 'Failed to create user', 'error');
+  }
+}
+
+function showEditUserModal(id, displayName, email, role) {
+  const roles = ['system_admin','inventory_admin','warehouse_lead','warehouse_operator','manager','accounting_operator'];
+  openModal('Edit User', `
+    <div class="form-grid">
+      <div class="form-group">
+        <label class="form-label">Display Name *</label>
+        <input type="text" class="form-input" id="editDisplayName" value="${esc(displayName)}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Email</label>
+        <input type="email" class="form-input" id="editEmail" value="${esc(email)}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Role *</label>
+        <select class="form-select" id="editRole">
+          ${roles.map(r => `<option value="${r}" ${r === role ? 'selected' : ''}>${r.replace(/_/g,' ')}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+  `, `
+    <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+    <button class="btn btn-primary" onclick="submitEditUser('${id}')">Save</button>
+  `);
+}
+
+async function submitEditUser(id) {
+  const result = await apiPut(`/users/${id}`, {
+    display_name: document.getElementById('editDisplayName').value.trim(),
+    email: document.getElementById('editEmail').value.trim() || null,
+    role: document.getElementById('editRole').value
+  });
+
+  if (result && result.success) {
+    closeModal();
+    toast('User updated', 'success');
+    loadUsers();
+  } else {
+    toast(result?.detail || 'Failed', 'error');
+  }
+}
+
+// ===== AUDIT LOG =====
 async function loadAudit() {
   const el = document.getElementById('page-audit');
-  el.innerHTML = skeletonTable(20);
-  const data = await api('/audit');
-  if (!data?.events?.length) { el.innerHTML = emptyState('No audit events'); return; }
+  el.innerHTML = '<div class="loading-skeleton skeleton-row"></div>'.repeat(5);
+  const data = await api('/audit_log');
+  if (!data) return;
+
   el.innerHTML = `
     <div class="card">
-      <div class="card-header"><div class="card-title">Audit Log</div><div class="card-subtitle">${data.events.length} events</div></div>
-      <div class="table-wrapper"><table>
-        <thead><tr><th>Time</th><th>User</th><th>Action</th><th>Table</th><th>Record</th><th>Changes</th></tr></thead>
-        <tbody>${data.events.map(e => `<tr>
-          <td>${fmtDate(e.action_at)}</td>
-          <td>${mono(e.action_by)}</td>
-          <td>${badge(e.action_type)}</td>
-          <td>${mono(e.table_name)}</td>
-          <td>${mono(e.record_id)}</td>
-          <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${e.changes_summary || ''}">${e.changes_summary ? e.changes_summary.substring(0,80) : '—'}</td>
-        </tr>`).join('')}</tbody>
-      </table></div>
-    </div>`;
+      <div class="card-header">
+        <div><div class="card-title">Audit Trail</div><div class="card-subtitle">Who, what, when, why \u2014 for all operationally material events</div></div>
+      </div>
+      <div class="table-wrapper">
+        <table>
+          <thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Object</th><th>Object ID</th><th>Reason</th><th>Channel</th></tr></thead>
+          <tbody>
+            ${data.logs.length > 0 ? data.logs.map(l => `<tr>
+              <td>${fmtDate(l.created_at)}</td>
+              <td>${l.actor_name || mono(l.actor_user_id)}</td>
+              <td>${mono(l.action)}</td>
+              <td>${badge(l.object_type)}</td>
+              <td>${mono(l.object_id ? l.object_id.substring(0, 8) : '\u2014')}</td>
+              <td style="font-size:11px">${l.reason_code || '\u2014'}</td>
+              <td>${badge(l.source_channel || 'web')}</td>
+            </tr>`).join('') : '<tr><td colspan="7" style="text-align:center;padding:var(--space-8);color:var(--color-text-faint)">No audit log entries yet.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
 }
 
-// ===== UI HELPERS =====
-function skeletonTable(rows) {
-  return `<div class="card"><div class="card-header"><div class="card-title loading-skeleton" style="width:160px;height:20px"></div></div>
-    ${Array(rows).fill('<div class="loading-skeleton skeleton-row"></div>').join('')}</div>`;
-}
-
-function emptyState(msg) {
-  return `<div class="empty-state"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M8 12h8M12 8v8"/></svg><p>${msg}</p></div>`;
-}
-
-// ===== INIT =====
-navigate('dashboard');
-
-// Reveal body after app init to prevent first-frame jitter
-document.body.classList.add('ready');
+// ===== BOOT =====
+initApp();
