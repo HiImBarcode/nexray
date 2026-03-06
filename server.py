@@ -1,6 +1,7 @@
+# NOTE: After renaming entities, delete nexray.db and restart to re-seed.
 """
-CasaFinds — FastAPI Backend Server
-Private internal operations platform for multi-entity home design operations.
+NEXRAY — FastAPI Backend Server
+Private internal operations platform for multi-entity warehouse and order operations.
 Deploy on Railway, Render, or any cloud platform.
 """
 
@@ -19,9 +20,9 @@ from datetime import datetime, timezone, timedelta
 from contextlib import contextmanager
 
 # ========== CONFIG ==========
-DB_PATH = os.environ.get("CASAFINDS_DB_PATH", os.environ.get("NEXRAY_DB_PATH", "nexray.db"))
+DB_PATH = os.environ.get("NEXRAY_DB_PATH", "nexray.db")
 
-app = FastAPI(title="CasaFinds Home Design Hub", version="2.0.0")
+app = FastAPI(title="NEXRAY Operations Platform", version="2.0.0")
 
 # ========== CORS ==========
 CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "*").split(",")
@@ -674,20 +675,20 @@ def seed_demo_data(db):
     now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
 
     entities = [
-        ('ent-01', 'Artisan Interiors', 'ART'),
-        ('ent-02', 'Wholesale Decor', 'WHL'),
-        ('ent-03', 'DTC Homewares', 'DTC'),
+        ('ent-01', "Larry's Hitex Inc.", 'LHX'),
+        ('ent-02', 'Fabric Life', 'FBL'),
+        ('ent-03', 'CasaFinds', 'CSF'),
     ]
     for eid, name, code in entities:
         db.execute("INSERT INTO entities (id, name, code) VALUES (?,?,?)", (eid, name, code))
 
     users = [
-        ('usr-01', 'admin', 'System Admin', 'admin@casafinds.local', 'system_admin', 'ent-01', None),
-        ('usr-02', 'warehouse1', 'Juan Cruz', 'juan@casafinds.local', 'warehouse_operator', 'ent-01', 'wh-01'),
-        ('usr-03', 'lead1', 'Maria Santos', 'maria@casafinds.local', 'warehouse_lead', 'ent-01', 'wh-01'),
-        ('usr-04', 'inv_admin', 'Carlos Reyes', 'carlos@casafinds.local', 'inventory_admin', 'ent-01', None),
-        ('usr-05', 'manager1', 'Ana Dela Cruz', 'ana@casafinds.local', 'manager', 'ent-01', None),
-        ('usr-06', 'acct1', 'Rose Lim', 'rose@casafinds.local', 'accounting_operator', 'ent-01', None),
+        ('usr-01', 'admin', 'System Admin', 'admin@nexray.local', 'system_admin', 'ent-01', None),
+        ('usr-02', 'warehouse1', 'Juan Cruz', 'juan@nexray.local', 'warehouse_operator', 'ent-01', 'wh-01'),
+        ('usr-03', 'lead1', 'Maria Santos', 'maria@nexray.local', 'warehouse_lead', 'ent-01', 'wh-01'),
+        ('usr-04', 'inv_admin', 'Carlos Reyes', 'carlos@nexray.local', 'inventory_admin', 'ent-01', None),
+        ('usr-05', 'manager1', 'Ana Dela Cruz', 'ana@nexray.local', 'manager', 'ent-01', None),
+        ('usr-06', 'acct1', 'Rose Lim', 'rose@nexray.local', 'accounting_operator', 'ent-01', None),
     ]
     for uid, uname, dname, email, role, eid, wid in users:
         # Default password = username; salted SHA256 hash
@@ -843,7 +844,7 @@ async def health_check():
     try:
         with get_db() as db:
             db.execute("SELECT 1")
-        return {"status": "ok", "service": "casafinds", "version": "2.0.0"}
+        return {"status": "ok", "service": "nexray", "version": "2.0.0"}
     except Exception as e:
         return JSONResponse({"status": "error", "detail": str(e)}, status_code=503)
 

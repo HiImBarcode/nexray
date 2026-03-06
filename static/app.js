@@ -1,4 +1,4 @@
-/* ========== CasaFinds App v2 — Full Feature UI ========== */
+/* ========== NEXRAY App v2 — Full Feature UI ========== */
 
 const API = '/api';
 let currentEntity = null;
@@ -10,7 +10,7 @@ let currentUser = null;
 (function () {
   const toggle = document.querySelector('[data-theme-toggle]');
   const root = document.documentElement;
-  let theme = localStorage.getItem('casafinds_theme') ||
+  let theme = localStorage.getItem('nexray_theme') ||
     (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   root.setAttribute('data-theme', theme);
   if (toggle) {
@@ -18,7 +18,7 @@ let currentUser = null;
     toggle.addEventListener('click', () => {
       theme = theme === 'dark' ? 'light' : 'dark';
       root.setAttribute('data-theme', theme);
-      localStorage.setItem('casafinds_theme', theme);
+      localStorage.setItem('nexray_theme', theme);
       updateToggleIcon(toggle, theme);
     });
   }
@@ -37,7 +37,7 @@ function toggleSidebar() {
 }
 
 // ===== API CLIENT =====
-function getToken() { return localStorage.getItem('casafinds_token'); }
+function getToken() { return localStorage.getItem('nexray_token'); }
 
 function authHeaders() {
   const tok = getToken();
@@ -165,7 +165,7 @@ async function handleLogin(e) {
       btn.textContent = 'Sign In';
       return;
     }
-    localStorage.setItem('casafinds_token', data.token);
+    localStorage.setItem('nexray_token', data.token);
     currentUser = data.user;
     updateSidebarUser(currentUser);
     // Set entity to user's entity
@@ -190,7 +190,7 @@ async function handleLogout() {
   try {
     await apiPost('/auth/logout', {});
   } catch (_) {}
-  localStorage.removeItem('casafinds_token');
+  localStorage.removeItem('nexray_token');
   currentUser = null;
   document.body.classList.remove('ready');
   showLogin();
@@ -247,7 +247,7 @@ async function initApp() {
       headers: { 'Authorization': 'Bearer ' + token }
     });
     if (!res.ok) {
-      localStorage.removeItem('casafinds_token');
+      localStorage.removeItem('nexray_token');
       showLogin();
       document.body.classList.add('ready');
       return;
@@ -271,25 +271,25 @@ async function initApp() {
 
 // ===== NAVIGATION =====
 const pageTitles = {
-  dashboard:   ['Dashboard', 'CasaFinds \u203A Home'],
-  outbound:    ['Outbound Queue', 'CasaFinds \u203A Orders \u203A Outbound'],
-  cuts:        ['Cut Transactions', 'CasaFinds \u203A Execution \u203A Cuts'],
-  tags:        ['Tags & Labels', 'CasaFinds \u203A Execution \u203A Tags'],
-  inbound:     ['Inbound Orders', 'CasaFinds \u203A Orders \u203A Inbound'],
-  receiving:   ['Receiving Sessions', 'CasaFinds \u203A Orders \u203A Receiving'],
-  channels:    ['Channel Connections', 'CasaFinds \u203A Orders \u203A Channels'],
-  inventory:   ['Lots & Rolls', 'CasaFinds \u203A Warehouse \u203A Inventory'],
-  warehouses:  ['Warehouses', 'CasaFinds \u203A Warehouse \u203A Locations'],
-  movements:   ['Movement Ledger', 'CasaFinds \u203A Warehouse \u203A Ledger'],
-  putaway:     ['Putaway', 'CasaFinds \u203A Warehouse \u203A Putaway'],
-  adjustments: ['Approvals', 'CasaFinds \u203A Controls \u203A Approvals'],
-  findings:    ['Reconciliation Findings', 'CasaFinds \u203A Controls \u203A Findings'],
-  integrations:['Integrations', 'CasaFinds \u203A System \u203A Integrations'],
-  items:       ['Items', 'CasaFinds \u203A System \u203A Items'],
-  suppliers:   ['Suppliers', 'CasaFinds \u203A System \u203A Suppliers'],
-  customers:   ['Customers', 'CasaFinds \u203A System \u203A Customers'],
-  users:       ['Users & RBAC', 'CasaFinds \u203A System \u203A Access Control'],
-  audit:       ['Audit Log', 'CasaFinds \u203A System \u203A Audit'],
+  dashboard:   ['Dashboard', 'NEXRAY \u203A Home'],
+  outbound:    ['Outbound Queue', 'NEXRAY \u203A Orders \u203A Outbound'],
+  cuts:        ['Cut Transactions', 'NEXRAY \u203A Execution \u203A Cuts'],
+  tags:        ['Tags & Labels', 'NEXRAY \u203A Execution \u203A Tags'],
+  inbound:     ['Inbound Orders', 'NEXRAY \u203A Orders \u203A Inbound'],
+  receiving:   ['Receiving Sessions', 'NEXRAY \u203A Orders \u203A Receiving'],
+  channels:    ['Channel Connections', 'NEXRAY \u203A Orders \u203A Channels'],
+  inventory:   ['Lots & Rolls', 'NEXRAY \u203A Warehouse \u203A Inventory'],
+  warehouses:  ['Warehouses', 'NEXRAY \u203A Warehouse \u203A Locations'],
+  movements:   ['Movement Ledger', 'NEXRAY \u203A Warehouse \u203A Ledger'],
+  putaway:     ['Putaway', 'NEXRAY \u203A Warehouse \u203A Putaway'],
+  adjustments: ['Approvals', 'NEXRAY \u203A Controls \u203A Approvals'],
+  findings:    ['Reconciliation Findings', 'NEXRAY \u203A Controls \u203A Findings'],
+  integrations:['Integrations', 'NEXRAY \u203A System \u203A Integrations'],
+  items:       ['Items', 'NEXRAY \u203A System \u203A Items'],
+  suppliers:   ['Suppliers', 'NEXRAY \u203A System \u203A Suppliers'],
+  customers:   ['Customers', 'NEXRAY \u203A System \u203A Customers'],
+  users:       ['Users & RBAC', 'NEXRAY \u203A System \u203A Access Control'],
+  audit:       ['Audit Log', 'NEXRAY \u203A System \u203A Audit'],
 };
 
 function navigate(page) {
@@ -302,7 +302,13 @@ function navigate(page) {
   const [title, breadcrumb] = pageTitles[page] || [page, ''];
   document.getElementById('page-title').textContent = title;
   document.getElementById('page-breadcrumb').textContent = breadcrumb;
-  loadPage(page);
+  // Loading bar
+  const main = document.getElementById('mainContent');
+  let bar = main.querySelector('.loading-bar');
+  if (!bar) { bar = document.createElement('div'); bar.className = 'loading-bar'; main.appendChild(bar); }
+  bar.style.display = 'block';
+  const loadDone = () => { if (bar) bar.style.display = 'none'; };
+  Promise.resolve(loadPage(page)).then(loadDone).catch(loadDone);
   document.getElementById('sidebar').classList.remove('open');
   document.getElementById('mobileOverlay').classList.remove('active');
 }
@@ -1260,11 +1266,11 @@ async function loadChannels() {
     ${mappings.length > 0 ? `
     <div class="card">
       <div class="card-header">
-        <div><div class="card-title">Product Mappings</div><div class="card-subtitle">Channel SKU to CasaFinds item links</div></div>
+        <div><div class="card-title">Product Mappings</div><div class="card-subtitle">Channel SKU to NEXRAY item links</div></div>
       </div>
       <div class="table-wrapper">
         <table>
-          <thead><tr><th>Channel</th><th>Shop</th><th>Channel SKU</th><th>CasaFinds Item</th><th>CasaFinds SKU</th><th>Active</th></tr></thead>
+          <thead><tr><th>Channel</th><th>Shop</th><th>Channel SKU</th><th>NEXRAY Item</th><th>NEXRAY SKU</th><th>Active</th></tr></thead>
           <tbody>
             ${mappings.map(m => `<tr>
               <td>${badge(m.channel_type)}</td>
@@ -1372,7 +1378,7 @@ function showAddMappingModal(channelId) {
 
     openModal('Add Product Mapping', `
       <div class="form-group">
-        <label class="form-label">CasaFinds Item *</label>
+        <label class="form-label">NEXRAY Item *</label>
         <select class="form-select" id="mapItem">${itemOptions}</select>
       </div>
       <div class="form-grid">
@@ -2479,7 +2485,7 @@ function showCreateUserModal() {
       </div>
       <div class="form-group">
         <label class="form-label">Email</label>
-        <input type="email" class="form-input" id="newEmail" placeholder="jsmith@casafinds.local">
+        <input type="email" class="form-input" id="newEmail" placeholder="jsmith@nexray.local">
       </div>
       <div class="form-group">
         <label class="form-label">Role *</label>
