@@ -1,12 +1,14 @@
 """
-NEXRAY — FastAPI Backend Server
-Private internal operations platform for multi-entity textile operations.
+CasaFinds — FastAPI Backend Server
+Private internal operations platform for multi-entity home design operations.
 Deploy on Railway, Render, or any cloud platform.
 """
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pathlib import Path
 import sqlite3
 import hashlib
 import uuid
@@ -17,9 +19,19 @@ from datetime import datetime, timezone, timedelta
 from contextlib import contextmanager
 
 # ========== CONFIG ==========
-DB_PATH = os.environ.get("NEXRAY_DB_PATH", "nexray.db")
+DB_PATH = os.environ.get("CASAFINDS_DB_PATH", os.environ.get("NEXRAY_DB_PATH", "nexray.db"))
 
-app = FastAPI(title="NEXRAY Operations Platform", version="2.0.0")
+app = FastAPI(title="CasaFinds Home Design Hub", version="2.0.0")
+
+# ========== CORS ==========
+CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "*").split(",")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ========== DATABASE ==========
 @contextmanager
@@ -78,6 +90,12 @@ def require_role(user: dict, *allowed_roles):
         return
     if user['role'] not in allowed_roles:
         raise HTTPException(status_code=403, detail=f"Forbidden: requires one of {allowed_roles}")
+
+def resolve_entity_id(user: dict, requested_entity_id: str = None) -> str:
+    """For system_admin, allow any entity_id. For others, force their own."""
+    if user['role'] == 'system_admin' and requested_entity_id:
+        return requested_entity_id
+    return user.get('entity_id') or requested_entity_id or 'ent-01'
 
 def write_audit(db, entity_id, actor_user_id, action, object_type, object_id,
                 before_json=None, after_json=None, reason_code=None, notes=None, source_channel='web'):
@@ -639,6 +657,12 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
         """)
 
+        # Migration: add password_salt column if missing
+        try:
+            db.execute("ALTER TABLE users ADD COLUMN password_salt TEXT")
+        except Exception:
+            pass  # column already exists
+
         # Seed demo data if empty
         if db.execute("SELECT COUNT(*) FROM entities").fetchone()[0] == 0:
             seed_demo_data(db)
@@ -650,30 +674,32 @@ def seed_demo_data(db):
     now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
 
     entities = [
-        ('ent-01', 'Premium Projects', 'PREM'),
-        ('ent-02', 'B2B Wholesale', 'B2B'),
-        ('ent-03', 'DTC E-Commerce', 'DTC'),
+        ('ent-01', 'Artisan Interiors', 'ART'),
+        ('ent-02', 'Wholesale Decor', 'WHL'),
+        ('ent-03', 'DTC Homewares', 'DTC'),
     ]
     for eid, name, code in entities:
         db.execute("INSERT INTO entities (id, name, code) VALUES (?,?,?)", (eid, name, code))
 
     users = [
-        ('usr-01', 'admin', 'System Admin', 'admin@nexray.local', 'system_admin', 'ent-01', None),
-        ('usr-02', 'warehouse1', 'Juan Cruz', 'juan@nexray.local', 'warehouse_operator', 'ent-01', 'wh-01'),
-        ('usr-03', 'lead1', 'Maria Santos', 'maria@nexray.local', 'warehouse_lead', 'ent-01', 'wh-01'),
-        ('usr-04', 'inv_admin', 'Carlos Reyes', 'carlos@nexray.local', 'inventory_admin', 'ent-01', None),
-        ('usr-05', 'manager1', 'Ana Dela Cruz', 'ana@nexray.local', 'manager', 'ent-01', None),
-        ('usr-06', 'acct1', 'Rose Lim', 'rose@nexray.local', 'accounting_operator', 'ent-01', None),
+        ('usr-01', 'admin', 'System Admin', 'admin@casafinds.local', 'system_admin', 'ent-01', None),
+        ('usr-02', 'warehouse1', 'Juan Cruz', 'juan@casafinds.local', 'warehouse_operator', 'ent-01', 'wh-01'),
+        ('usr-03', 'lead1', 'Maria Santos', 'maria@casafinds.local', 'warehouse_lead', 'ent-01', 'wh-01'),
+        ('usr-04', 'inv_admin', 'Carlos Reyes', 'carlos@casafinds.local', 'inventory_admin', 'ent-01', None),
+        ('usr-05', 'manager1', 'Ana Dela Cruz', 'ana@casafinds.local', 'manager', 'ent-01', None),
+        ('usr-06', 'acct1', 'Rose Lim', 'rose@casafinds.local', 'accounting_operator', 'ent-01', None),
     ]
     for uid, uname, dname, email, role, eid, wid in users:
-        phash = hashlib.sha256(('nexray2024_' + uname).encode()).hexdigest()
-        db.execute("INSERT INTO users (id, username, display_name, email, password_hash, role, entity_id, warehouse_id) VALUES (?,?,?,?,?,?,?,?)",
-                   (uid, uname, dname, email, phash, role, eid, wid))
+        # Default password = username; salted SHA256 hash
+        salt = uuid.uuid4().hex[:16]
+        phash = hashlib.sha256((salt + uname).encode()).hexdigest()
+        db.execute("INSERT INTO users (id, username, display_name, email, password_hash, password_salt, role, entity_id, warehouse_id) VALUES (?,?,?,?,?,?,?,?,?)",
+                   (uid, uname, dname, email, phash, salt, role, eid, wid))
 
     warehouses = [
-        ('wh-01', 'ent-01', 'MNL-MAIN', 'Manila Main Warehouse', 'Quezon City, Manila'),
-        ('wh-02', 'ent-01', 'CEB-01', 'Cebu Warehouse', 'Mandaue, Cebu'),
-        ('wh-03', 'ent-02', 'AUR-01', 'Aurora Warehouse', 'Aurora, Quezon'),
+        ('wh-01', 'ent-01', 'MNL-MAIN', 'Manila Design Center', 'Quezon City, Manila'),
+        ('wh-02', 'ent-01', 'CEB-01', 'Cebu Distribution Hub', 'Mandaue, Cebu'),
+        ('wh-03', 'ent-02', 'AUR-01', 'Aurora Storage Facility', 'Aurora, Quezon'),
     ]
     for wid, eid, code, name, addr in warehouses:
         db.execute("INSERT INTO warehouses (id, entity_id, code, name, address) VALUES (?,?,?,?,?)", (wid, eid, code, name, addr))
@@ -817,7 +843,7 @@ async def health_check():
     try:
         with get_db() as db:
             db.execute("SELECT 1")
-        return {"status": "ok", "service": "nexray", "version": "2.0.0"}
+        return {"status": "ok", "service": "casafinds", "version": "2.0.0"}
     except Exception as e:
         return JSONResponse({"status": "error", "detail": str(e)}, status_code=503)
 
@@ -832,12 +858,15 @@ async def auth_login(request: Request):
     if not username or not password:
         raise HTTPException(status_code=400, detail="username and password required")
 
-    expected_hash = hashlib.sha256(("nexray2024_" + username).encode()).hexdigest()
     with get_db() as db:
         user = db.execute(
             "SELECT * FROM users WHERE username=? AND is_active=1", (username,)
         ).fetchone()
-        if not user or user["password_hash"] != expected_hash:
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        salt = user["password_salt"] or ""
+        expected_hash = hashlib.sha256((salt + password).encode()).hexdigest()
+        if user["password_hash"] != expected_hash:
             raise HTTPException(status_code=401, detail="Invalid credentials")
 
         token = str(uuid.uuid4())
@@ -900,6 +929,7 @@ async def auth_me(request: Request):
 async def get_dashboard(request: Request, entity_id: str = "ent-01"):
     user = require_auth(request)
     require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'manager', 'warehouse_operator')
+    entity_id = resolve_entity_id(user, entity_id)
     with get_db() as db:
         k = {}
         k['total_active_lots'] = db.execute("SELECT COUNT(*) as c FROM inventory_lots WHERE entity_id=? AND status='active'", (entity_id,)).fetchone()['c']
@@ -935,6 +965,7 @@ async def get_dashboard(request: Request, entity_id: str = "ent-01"):
 async def get_inventory(request: Request, entity_id: str = "ent-01", warehouse_id: str = None, status: str = "active", item_type: str = None):
     user = require_auth(request)
     require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'warehouse_operator', 'manager')
+    entity_id = resolve_entity_id(user, entity_id)
     with get_db() as db:
         query = """SELECT il.*, i.sku, i.name as item_name, i.item_type, i.base_uom,
                    w.code as warehouse_code, w.name as warehouse_name,
@@ -957,6 +988,7 @@ async def get_inventory(request: Request, entity_id: str = "ent-01", warehouse_i
 async def get_outbound(request: Request, entity_id: str = "ent-01", status: str = None):
     user = require_auth(request)
     require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'warehouse_operator', 'manager')
+    entity_id = resolve_entity_id(user, entity_id)
     with get_db() as db:
         query = """SELECT orl.*, i.sku, i.name as item_name, orq.reference_no, orq.warehouse_id, w.code as warehouse_code
                    FROM outbound_request_lines orl LEFT JOIN outbound_requests orq ON orl.outbound_request_id = orq.id
@@ -971,6 +1003,7 @@ async def get_outbound(request: Request, entity_id: str = "ent-01", status: str 
 async def get_cuts(request: Request, entity_id: str = "ent-01"):
     user = require_auth(request)
     require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'warehouse_operator', 'manager')
+    entity_id = resolve_entity_id(user, entity_id)
     with get_db() as db:
         cuts = rows_to_list(db.execute("""
             SELECT ct.*, i.name as item_name, i.sku, il.tracking_id as lot_tracking, il.lot_no,
@@ -986,6 +1019,7 @@ async def get_cuts(request: Request, entity_id: str = "ent-01"):
 async def get_tags(request: Request, entity_id: str = "ent-01"):
     user = require_auth(request)
     require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'warehouse_operator', 'manager')
+    entity_id = resolve_entity_id(user, entity_id)
     with get_db() as db:
         tags = rows_to_list(db.execute("""
             SELECT tl.*, ct.qty_actual as cut_qty, il.tracking_id as lot_tracking, i.name as item_name
@@ -1000,6 +1034,7 @@ async def get_tags(request: Request, entity_id: str = "ent-01"):
 async def get_warehouses(request: Request, entity_id: str = "ent-01"):
     user = require_auth(request)
     require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'warehouse_operator', 'manager')
+    entity_id = resolve_entity_id(user, entity_id)
     with get_db() as db:
         whs = rows_to_list(db.execute("""
             SELECT w.*, e.name as entity_name,
@@ -1029,6 +1064,7 @@ async def get_locations(request: Request, warehouse_id: str = "wh-01"):
 async def get_adjustments(request: Request, entity_id: str = "ent-01", status: str = None):
     user = require_auth(request)
     require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'manager')
+    entity_id = resolve_entity_id(user, entity_id)
     with get_db() as db:
         query = "SELECT * FROM adjustment_requests WHERE entity_id=?"
         args = [entity_id]
@@ -1041,6 +1077,7 @@ async def get_adjustments(request: Request, entity_id: str = "ent-01", status: s
 async def get_findings(request: Request, entity_id: str = "ent-01", resolution_status: str = None):
     user = require_auth(request)
     require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'manager')
+    entity_id = resolve_entity_id(user, entity_id)
     with get_db() as db:
         query = "SELECT * FROM reconciliation_findings WHERE entity_id=?"
         args = [entity_id]
@@ -1053,6 +1090,7 @@ async def get_findings(request: Request, entity_id: str = "ent-01", resolution_s
 async def get_movements(request: Request, entity_id: str = "ent-01", lot_id: str = None):
     user = require_auth(request)
     require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'warehouse_operator', 'manager')
+    entity_id = resolve_entity_id(user, entity_id)
     with get_db() as db:
         query = """SELECT im.*, il.tracking_id as lot_tracking, i.name as item_name
                    FROM inventory_movements im LEFT JOIN inventory_lots il ON im.inventory_lot_id = il.id
@@ -1067,6 +1105,7 @@ async def get_movements(request: Request, entity_id: str = "ent-01", lot_id: str
 async def get_integration_events(request: Request, entity_id: str = "ent-01", status: str = None):
     user = require_auth(request)
     require_role(user, 'system_admin', 'inventory_admin', 'manager', 'accounting_operator')
+    entity_id = resolve_entity_id(user, entity_id)
     with get_db() as db:
         query = "SELECT * FROM integration_events WHERE entity_id=?"
         args = [entity_id]
@@ -1100,6 +1139,7 @@ async def get_entities(request: Request):
 async def get_audit_log(request: Request, entity_id: str = "ent-01"):
     user = require_auth(request)
     require_role(user, 'system_admin', 'manager', 'inventory_admin')
+    entity_id = resolve_entity_id(user, entity_id)
     with get_db() as db:
         logs = rows_to_list(db.execute("""
             SELECT al.*, u.display_name as actor_name FROM audit_logs al
@@ -1113,6 +1153,7 @@ async def get_audit_log(request: Request, entity_id: str = "ent-01"):
 async def get_supplier_orders(request: Request, entity_id: str = "ent-01"):
     user = require_auth(request)
     require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'manager')
+    entity_id = resolve_entity_id(user, entity_id)
     with get_db() as db:
         orders = rows_to_list(db.execute("""
             SELECT sol.*, s.name as supplier_name FROM supplier_order_lists sol
@@ -1125,6 +1166,7 @@ async def get_supplier_orders(request: Request, entity_id: str = "ent-01"):
 async def get_print_jobs(request: Request, entity_id: str = "ent-01"):
     user = require_auth(request)
     require_role(user, 'system_admin', 'inventory_admin', 'warehouse_lead', 'warehouse_operator', 'manager')
+    entity_id = resolve_entity_id(user, entity_id)
     with get_db() as db:
         jobs = rows_to_list(db.execute("""
             SELECT pj.*, tl.tag_code FROM print_jobs pj
@@ -1138,6 +1180,7 @@ async def get_print_jobs(request: Request, entity_id: str = "ent-01"):
 @app.get("/api/items")
 async def get_items(request: Request, entity_id: str = "ent-01", item_type: str = None, is_active: int = 1):
     user = require_auth(request)
+    entity_id = resolve_entity_id(user, entity_id)
     with get_db() as db:
         query = "SELECT * FROM items WHERE entity_id=? AND is_active=?"
         args = [entity_id, is_active]
@@ -1161,6 +1204,7 @@ async def get_item(request: Request, item_id: str):
 @app.get("/api/suppliers")
 async def get_suppliers(request: Request, entity_id: str = "ent-01"):
     user = require_auth(request)
+    entity_id = resolve_entity_id(user, entity_id)
     with get_db() as db:
         return {'suppliers': rows_to_list(db.execute(
             "SELECT * FROM suppliers WHERE entity_id=? ORDER BY name", (entity_id,)
@@ -1170,6 +1214,7 @@ async def get_suppliers(request: Request, entity_id: str = "ent-01"):
 @app.get("/api/customers")
 async def get_customers(request: Request, entity_id: str = "ent-01"):
     user = require_auth(request)
+    entity_id = resolve_entity_id(user, entity_id)
     with get_db() as db:
         return {'customers': rows_to_list(db.execute(
             "SELECT * FROM customers WHERE entity_id=? ORDER BY name", (entity_id,)
@@ -1482,16 +1527,14 @@ async def create_user(request: Request):
     body = await request.json()
     uid = str(uuid.uuid4())
     username = body['username']
-    password = body.get('password', 'nexray2024_' + username)
-    phash = hashlib.sha256(('nexray2024_' + username).encode()).hexdigest()
-    # If explicit password provided, hash it directly
-    if body.get('password'):
-        phash = hashlib.sha256(('nexray2024_' + username).encode()).hexdigest()
+    password = body.get('password', username)  # default password = username
+    salt = uuid.uuid4().hex[:16]
+    phash = hashlib.sha256((salt + password).encode()).hexdigest()
     with get_db() as db:
         db.execute(
-            "INSERT INTO users (id, username, display_name, email, password_hash, role, entity_id, warehouse_id, is_active) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
-            (uid, username, body['display_name'], body.get('email'), phash,
+            "INSERT INTO users (id, username, display_name, email, password_hash, password_salt, role, entity_id, warehouse_id, is_active) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (uid, username, body['display_name'], body.get('email'), phash, salt,
              body['role'], body.get('entity_id'), body.get('warehouse_id'), body.get('is_active', 1))
         )
         safe_body = {k: v for k, v in body.items() if k != 'password'}
@@ -2219,6 +2262,7 @@ async def run_reconciliation(request: Request):
 @app.get("/api/channels")
 async def get_channels(request: Request, entity_id: str = None):
     user = require_auth(request)
+    entity_id = resolve_entity_id(user, entity_id)
     with get_db() as db:
         if entity_id:
             channels = rows_to_list(db.execute(
@@ -2311,24 +2355,10 @@ async def sync_channel_orders(request: Request, channel_id: str):
         if not ch.get('is_active'):
             raise HTTPException(status_code=400, detail="Channel is not active")
 
-        # STUB: Simulate pulling orders
-        stub_orders = [
-            {"channel_order_id": f"STUB-{channel_id[:4]}-{i:03d}", "channel_status": "paid", "items": []}
-            for i in range(1, 4)
-        ]
-        synced = 0
-        for order in stub_orders:
-            mapping_id = str(uuid.uuid4())
-            try:
-                db.execute(
-                    "INSERT INTO channel_order_mappings (id, channel_connection_id, channel_order_id, channel_status, sync_status, raw_order_json) "
-                    "VALUES (?,?,?,?,?,?)",
-                    (mapping_id, channel_id, order['channel_order_id'], order['channel_status'],
-                     'synced', json.dumps(order))
-                )
-                synced += 1
-            except Exception:
-                pass
+        # Dispatch to channel adapter (stub or live)
+        adapter = CHANNEL_ADAPTERS.get(ch['channel_type'], {})
+        sync_fn = adapter.get('sync_orders', _stub_sync_orders)
+        synced, _ = sync_fn(ch, db, user)
 
         db.execute("UPDATE channel_connections SET last_sync_at=datetime('now'), updated_at=datetime('now') WHERE id=?",
                    (channel_id,))
@@ -2348,7 +2378,7 @@ async def push_channel_inventory(request: Request, channel_id: str):
         if not ch:
             raise HTTPException(status_code=404, detail="Channel not found")
 
-        # STUB: Simulate pushing inventory levels
+        # Query product mappings with available inventory
         mappings = rows_to_list(db.execute(
             "SELECT cpm.*, i.sku, "
             "COALESCE(SUM(il.qty_on_hand - COALESCE(il.qty_reserved,0)),0) as available_qty "
@@ -2359,14 +2389,10 @@ async def push_channel_inventory(request: Request, channel_id: str):
             (channel_id,)
         ).fetchall())
 
-        pushed = []
-        for m in mappings:
-            pushed.append({
-                'channel_sku': m['channel_sku'],
-                'nexray_sku': m['sku'],
-                'available_qty': round(m['available_qty'], 2),
-                'push_status': 'stub_success'
-            })
+        # Dispatch to channel adapter (stub or live)
+        adapter = CHANNEL_ADAPTERS.get(ch['channel_type'], {})
+        push_fn = adapter.get('push_inventory', _stub_push_inventory)
+        pushed = push_fn(ch, db, mappings)
 
         db.execute("UPDATE channel_connections SET last_sync_at=datetime('now'), updated_at=datetime('now') WHERE id=?",
                    (channel_id,))
@@ -2421,6 +2447,74 @@ async def create_channel_mapping(request: Request):
 
 
 
+# ========== CHANNEL ADAPTERS ==========
+
+def _stub_sync_orders(channel, db, user):
+    """Default stub adapter for order sync — returns simulated orders."""
+    stub_orders = [
+        {"channel_order_id": f"STUB-{channel['id'][:4]}-{i:03d}", "channel_status": "paid", "items": []}
+        for i in range(1, 4)
+    ]
+    synced = 0
+    for order in stub_orders:
+        mapping_id = str(uuid.uuid4())
+        try:
+            db.execute(
+                "INSERT INTO channel_order_mappings (id, channel_connection_id, channel_order_id, channel_status, sync_status, raw_order_json) "
+                "VALUES (?,?,?,?,?,?)",
+                (mapping_id, channel['id'], order['channel_order_id'], order['channel_status'],
+                 'synced', json.dumps(order))
+            )
+            synced += 1
+        except Exception:
+            pass
+    return synced, stub_orders
+
+def _stub_push_inventory(channel, db, mappings):
+    """Default stub adapter for inventory push — returns simulated push results."""
+    pushed = []
+    for m in mappings:
+        pushed.append({
+            'channel_sku': m['channel_sku'],
+            'nexray_sku': m['sku'],
+            'available_qty': round(m['available_qty'], 2),
+            'push_status': 'stub_success'
+        })
+    return pushed
+
+CHANNEL_ADAPTERS = {
+    'shopify': {'sync_orders': _stub_sync_orders, 'push_inventory': _stub_push_inventory},
+    'shopee': {'sync_orders': _stub_sync_orders, 'push_inventory': _stub_push_inventory},
+    'lazada': {'sync_orders': _stub_sync_orders, 'push_inventory': _stub_push_inventory},
+    'tiktokshop': {'sync_orders': _stub_sync_orders, 'push_inventory': _stub_push_inventory},
+}
+
+
+# ========== WEBHOOK RECEIVER ==========
+
+@app.post("/api/webhooks/{channel_type}")
+async def webhook_receiver(request: Request, channel_type: str):
+    """Receive webhooks from channel platforms. Stores as integration_event for processing."""
+    if channel_type not in ('shopify', 'shopee', 'lazada', 'tiktokshop'):
+        return JSONResponse({"detail": "Unknown channel type"}, status_code=400)
+
+    body = await request.json()
+    event_id = str(uuid.uuid4())
+
+    # TODO: Add per-channel signature verification here
+    # e.g., verify HMAC for Shopify, signature for Lazada, etc.
+
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO integration_events (id, entity_id, event_type, event_idempotency_key, "
+            "payload_json, status, direction) VALUES (?,?,?,?,?,?,?)",
+            (event_id, 'system', f'{channel_type}_webhook', f'wh-{uuid.uuid4().hex[:12]}',
+             json.dumps(body), 'pending', 'inbound')
+        )
+        db.commit()
+    return {'received': True, 'event_id': event_id}
+
+
 # ===== SERVE STATIC FILES + SPA FALLBACK =====
 static_dir = "static"
 if os.path.isdir(static_dir):
@@ -2432,14 +2526,26 @@ async def serve_index():
 
 @app.get("/{path:path}")
 async def catch_all(path: str):
-    file_path = f"static/{path}"
-    if os.path.isfile(file_path):
-        mime_type, _ = mimetypes.guess_type(file_path)
+    # API paths must never fall through to SPA — return proper JSON 404
+    if path.startswith("api/"):
+        return JSONResponse({"detail": "Not Found", "path": f"/{path}"}, status_code=404)
+
+    # Path traversal protection: resolve and sandbox within static/
+    static_root = Path("static").resolve()
+    requested = (static_root / path).resolve()
+    if not str(requested).startswith(str(static_root)):
+        return JSONResponse({"detail": "Forbidden"}, status_code=403)
+
+    if requested.is_file():
+        mime_type, _ = mimetypes.guess_type(str(requested))
         if mime_type is None:
             mime_type = "application/octet-stream"
-        return FileResponse(file_path, media_type=mime_type)
-    if os.path.isfile("static/index.html"):
-        return FileResponse("static/index.html", media_type="text/html")
+        return FileResponse(str(requested), media_type=mime_type)
+
+    # SPA fallback for client-side routes
+    index_path = static_root / "index.html"
+    if index_path.is_file():
+        return FileResponse(str(index_path), media_type="text/html")
     return JSONResponse({"detail": "Not Found"}, status_code=404)
 
 

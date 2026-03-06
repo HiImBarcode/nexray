@@ -1,7 +1,7 @@
-/* ========== NEXRAY App v2 — Full Feature UI ========== */
+/* ========== CasaFinds App v2 — Full Feature UI ========== */
 
 const API = '/api';
-let currentEntity = 'ent-01';
+let currentEntity = null;
 let currentPage = 'dashboard';
 let dashboardData = null;
 let currentUser = null;
@@ -10,7 +10,7 @@ let currentUser = null;
 (function () {
   const toggle = document.querySelector('[data-theme-toggle]');
   const root = document.documentElement;
-  let theme = localStorage.getItem('nexray_theme') ||
+  let theme = localStorage.getItem('casafinds_theme') ||
     (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   root.setAttribute('data-theme', theme);
   if (toggle) {
@@ -18,7 +18,7 @@ let currentUser = null;
     toggle.addEventListener('click', () => {
       theme = theme === 'dark' ? 'light' : 'dark';
       root.setAttribute('data-theme', theme);
-      localStorage.setItem('nexray_theme', theme);
+      localStorage.setItem('casafinds_theme', theme);
       updateToggleIcon(toggle, theme);
     });
   }
@@ -37,7 +37,7 @@ function toggleSidebar() {
 }
 
 // ===== API CLIENT =====
-function getToken() { return localStorage.getItem('nexray_token'); }
+function getToken() { return localStorage.getItem('casafinds_token'); }
 
 function authHeaders() {
   const tok = getToken();
@@ -47,16 +47,22 @@ function authHeaders() {
 }
 
 async function api(endpoint, params = {}) {
-  params.entity_id = currentEntity;
+  if (currentEntity) params.entity_id = currentEntity;
   const qs = new URLSearchParams(params).toString();
   try {
     const res = await fetch(`${API}${endpoint}?${qs}`, {
       headers: { 'Authorization': 'Bearer ' + (getToken() || '') }
     });
     if (res.status === 401) { showLogin(); return null; }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: `Error ${res.status}` }));
+      toast(err.detail || `Request failed (${res.status})`, 'error');
+      return null;
+    }
     return await res.json();
   } catch (e) {
     console.error('API Error:', e);
+    toast('Network error: ' + (e.message || 'Connection failed'), 'error');
     return null;
   }
 }
@@ -69,9 +75,15 @@ async function apiPost(endpoint, body) {
       body: JSON.stringify(body)
     });
     if (res.status === 401) { showLogin(); return null; }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: `Error ${res.status}` }));
+      toast(err.detail || `Request failed (${res.status})`, 'error');
+      return null;
+    }
     return await res.json();
   } catch (e) {
     console.error('API Error:', e);
+    toast('Network error: ' + (e.message || 'Connection failed'), 'error');
     return null;
   }
 }
@@ -84,9 +96,15 @@ async function apiPut(endpoint, body) {
       body: JSON.stringify(body)
     });
     if (res.status === 401) { showLogin(); return null; }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: `Error ${res.status}` }));
+      toast(err.detail || `Request failed (${res.status})`, 'error');
+      return null;
+    }
     return await res.json();
   } catch (e) {
     console.error('API Error:', e);
+    toast('Network error: ' + (e.message || 'Connection failed'), 'error');
     return null;
   }
 }
@@ -98,9 +116,15 @@ async function apiDelete(endpoint) {
       headers: authHeaders()
     });
     if (res.status === 401) { showLogin(); return null; }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: `Error ${res.status}` }));
+      toast(err.detail || `Request failed (${res.status})`, 'error');
+      return null;
+    }
     return await res.json();
   } catch (e) {
     console.error('API Error:', e);
+    toast('Network error: ' + (e.message || 'Connection failed'), 'error');
     return null;
   }
 }
@@ -141,7 +165,7 @@ async function handleLogin(e) {
       btn.textContent = 'Sign In';
       return;
     }
-    localStorage.setItem('nexray_token', data.token);
+    localStorage.setItem('casafinds_token', data.token);
     currentUser = data.user;
     updateSidebarUser(currentUser);
     // Set entity to user's entity
@@ -151,6 +175,7 @@ async function handleLogin(e) {
       if (sel) sel.value = currentEntity;
     }
     showApp();
+    loadEntities();
     navigate('dashboard');
     document.body.classList.add('ready');
   } catch (err) {
@@ -165,7 +190,7 @@ async function handleLogout() {
   try {
     await apiPost('/auth/logout', {});
   } catch (_) {}
-  localStorage.removeItem('nexray_token');
+  localStorage.removeItem('casafinds_token');
   currentUser = null;
   document.body.classList.remove('ready');
   showLogin();
@@ -188,6 +213,26 @@ function updateSidebarUser(user) {
   if (rl) rl.textContent = user.role.replace(/_/g, ' ');
 }
 
+// ===== DYNAMIC ENTITY/WAREHOUSE LOADING =====
+async function loadEntities() {
+  const data = await api('/entities');
+  if (!data || !data.entities) return;
+  const sel = document.getElementById('entitySelect');
+  if (!sel) return;
+  sel.innerHTML = data.entities.map(e =>
+    `<option value="${e.id}">${esc(e.name)}</option>`
+  ).join('');
+  if (currentEntity) sel.value = currentEntity;
+}
+
+async function getWarehouseOptions() {
+  const data = await api('/warehouses');
+  if (!data || !data.warehouses) return '<option value="">No warehouses</option>';
+  return data.warehouses.map(w =>
+    `<option value="${w.id}">${esc(w.name)} (${esc(w.code)})</option>`
+  ).join('');
+}
+
 // ===== INIT (auth check) =====
 async function initApp() {
   const token = getToken();
@@ -202,7 +247,7 @@ async function initApp() {
       headers: { 'Authorization': 'Bearer ' + token }
     });
     if (!res.ok) {
-      localStorage.removeItem('nexray_token');
+      localStorage.removeItem('casafinds_token');
       showLogin();
       document.body.classList.add('ready');
       return;
@@ -216,6 +261,7 @@ async function initApp() {
       if (sel) sel.value = currentEntity;
     }
     showApp();
+    loadEntities();
     navigate('dashboard');
   } catch (e) {
     showLogin();
@@ -225,25 +271,25 @@ async function initApp() {
 
 // ===== NAVIGATION =====
 const pageTitles = {
-  dashboard:   ['Dashboard', 'NEXRAY \u203A Operations'],
-  outbound:    ['Outbound Queue', 'NEXRAY \u203A OMS \u203A Outbound'],
-  cuts:        ['Cut Transactions', 'NEXRAY \u203A Execution \u203A Cuts'],
-  tags:        ['Tags & Labels', 'NEXRAY \u203A Execution \u203A Tags'],
-  inbound:     ['Inbound Orders', 'NEXRAY \u203A OMS \u203A Inbound'],
-  receiving:   ['Receiving Sessions', 'NEXRAY \u203A OMS \u203A Receiving'],
-  channels:    ['Channel Connections', 'NEXRAY \u203A OMS \u203A Channels'],
-  inventory:   ['Lots & Rolls', 'NEXRAY \u203A WMS \u203A Inventory'],
-  warehouses:  ['Warehouses', 'NEXRAY \u203A WMS \u203A Locations'],
-  movements:   ['Movement Ledger', 'NEXRAY \u203A WMS \u203A Ledger'],
-  putaway:     ['Putaway', 'NEXRAY \u203A WMS \u203A Putaway'],
-  adjustments: ['Approvals', 'NEXRAY \u203A Controls \u203A Approvals'],
-  findings:    ['Reconciliation Findings', 'NEXRAY \u203A Controls \u203A Findings'],
-  integrations:['Integrations', 'NEXRAY \u203A System \u203A QBD Integration'],
-  items:       ['Items', 'NEXRAY \u203A System \u203A Items'],
-  suppliers:   ['Suppliers', 'NEXRAY \u203A System \u203A Suppliers'],
-  customers:   ['Customers', 'NEXRAY \u203A System \u203A Customers'],
-  users:       ['Users & RBAC', 'NEXRAY \u203A System \u203A Access Control'],
-  audit:       ['Audit Log', 'NEXRAY \u203A System \u203A Audit'],
+  dashboard:   ['Dashboard', 'CasaFinds \u203A Home'],
+  outbound:    ['Outbound Queue', 'CasaFinds \u203A Orders \u203A Outbound'],
+  cuts:        ['Cut Transactions', 'CasaFinds \u203A Execution \u203A Cuts'],
+  tags:        ['Tags & Labels', 'CasaFinds \u203A Execution \u203A Tags'],
+  inbound:     ['Inbound Orders', 'CasaFinds \u203A Orders \u203A Inbound'],
+  receiving:   ['Receiving Sessions', 'CasaFinds \u203A Orders \u203A Receiving'],
+  channels:    ['Channel Connections', 'CasaFinds \u203A Orders \u203A Channels'],
+  inventory:   ['Lots & Rolls', 'CasaFinds \u203A Warehouse \u203A Inventory'],
+  warehouses:  ['Warehouses', 'CasaFinds \u203A Warehouse \u203A Locations'],
+  movements:   ['Movement Ledger', 'CasaFinds \u203A Warehouse \u203A Ledger'],
+  putaway:     ['Putaway', 'CasaFinds \u203A Warehouse \u203A Putaway'],
+  adjustments: ['Approvals', 'CasaFinds \u203A Controls \u203A Approvals'],
+  findings:    ['Reconciliation Findings', 'CasaFinds \u203A Controls \u203A Findings'],
+  integrations:['Integrations', 'CasaFinds \u203A System \u203A Integrations'],
+  items:       ['Items', 'CasaFinds \u203A System \u203A Items'],
+  suppliers:   ['Suppliers', 'CasaFinds \u203A System \u203A Suppliers'],
+  customers:   ['Customers', 'CasaFinds \u203A System \u203A Customers'],
+  users:       ['Users & RBAC', 'CasaFinds \u203A System \u203A Access Control'],
+  audit:       ['Audit Log', 'CasaFinds \u203A System \u203A Audit'],
 };
 
 function navigate(page) {
@@ -643,7 +689,8 @@ async function submitRecordCut(lineId) {
   }
 }
 
-function showCreateOutboundBatchModal() {
+async function showCreateOutboundBatchModal() {
+  const whOpts = await getWarehouseOptions();
   openModal('Import Outbound Batch', `
     <div class="form-group">
       <label class="form-label">Batch Code (auto-generated if empty)</label>
@@ -655,7 +702,7 @@ function showCreateOutboundBatchModal() {
     </div>
     <div class="form-group">
       <label class="form-label">Warehouse</label>
-      <select class="form-select" id="obWarehouse"><option value="wh-01">Manila Main</option><option value="wh-02">Cebu</option><option value="wh-03">Aurora</option></select>
+      <select class="form-select" id="obWarehouse">${whOpts}</select>
     </div>
     <div class="form-group">
       <label class="form-label">Lines</label>
@@ -971,15 +1018,14 @@ async function submitCreateSupplierOrder() {
   }
 }
 
-function showStartReceivingModal(solId, batchCode) {
+async function showStartReceivingModal(solId, batchCode) {
+  const whOpts = await getWarehouseOptions();
   openModal('Start Receiving Session', `
     <p style="font-size:var(--text-xs);color:var(--color-text-muted)">Starting receiving for: <strong>${esc(batchCode)}</strong></p>
     <div class="form-group">
       <label class="form-label">Warehouse</label>
       <select class="form-select" id="recvWarehouse">
-        <option value="wh-01">Manila Main</option>
-        <option value="wh-02">Cebu</option>
-        <option value="wh-03">Aurora</option>
+        ${whOpts}
       </select>
     </div>
     <div class="form-group">
@@ -1055,7 +1101,7 @@ async function loadReceiving() {
 
 function showReceiveLotModal() {
   // Load items and warehouses in parallel
-  Promise.all([api('/items'), api('/warehouses', { entity_id: 'all' }), api('/locations', { warehouse_id: 'wh-01' })]).then(([itemsData, whData, locData]) => {
+  Promise.all([api('/items'), api('/warehouses', { entity_id: 'all' }), api('/locations')]).then(([itemsData, whData, locData]) => {
     const items = itemsData ? itemsData.items : [];
     const warehouses = whData ? whData.warehouses : [];
     const locs = locData ? locData.locations : [];
@@ -1214,11 +1260,11 @@ async function loadChannels() {
     ${mappings.length > 0 ? `
     <div class="card">
       <div class="card-header">
-        <div><div class="card-title">Product Mappings</div><div class="card-subtitle">Channel SKU to NEXRAY item links</div></div>
+        <div><div class="card-title">Product Mappings</div><div class="card-subtitle">Channel SKU to CasaFinds item links</div></div>
       </div>
       <div class="table-wrapper">
         <table>
-          <thead><tr><th>Channel</th><th>Shop</th><th>Channel SKU</th><th>NEXRAY Item</th><th>NEXRAY SKU</th><th>Active</th></tr></thead>
+          <thead><tr><th>Channel</th><th>Shop</th><th>Channel SKU</th><th>CasaFinds Item</th><th>CasaFinds SKU</th><th>Active</th></tr></thead>
           <tbody>
             ${mappings.map(m => `<tr>
               <td>${badge(m.channel_type)}</td>
@@ -1326,7 +1372,7 @@ function showAddMappingModal(channelId) {
 
     openModal('Add Product Mapping', `
       <div class="form-group">
-        <label class="form-label">NEXRAY Item *</label>
+        <label class="form-label">CasaFinds Item *</label>
         <select class="form-select" id="mapItem">${itemOptions}</select>
       </div>
       <div class="form-grid">
@@ -2433,7 +2479,7 @@ function showCreateUserModal() {
       </div>
       <div class="form-group">
         <label class="form-label">Email</label>
-        <input type="email" class="form-input" id="newEmail" placeholder="jsmith@nexray.local">
+        <input type="email" class="form-input" id="newEmail" placeholder="jsmith@casafinds.local">
       </div>
       <div class="form-group">
         <label class="form-label">Role *</label>
@@ -2442,7 +2488,7 @@ function showCreateUserModal() {
         </select>
       </div>
     </div>
-    <div class="result-banner info" style="margin-top:0">Default password: <strong>nexray2024_{username}</strong>. User should change on first login.</div>
+    <div class="result-banner info" style="margin-top:0">Default password is the username. User should change on first login.</div>
   `, `
     <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
     <button class="btn btn-primary" onclick="submitCreateUser()">Create User</button>
