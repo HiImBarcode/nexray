@@ -35,6 +35,64 @@ function toggleSidebar() {
   document.getElementById('mobileOverlay').classList.toggle('active');
 }
 
+// ===== COMPANY CONTEXT =====
+let currentCompanyContext = localStorage.getItem('nexray_company_context') || 'all';
+
+function switchCompanyContext(value) {
+  currentCompanyContext = value;
+  localStorage.setItem('nexray_company_context', value);
+  applyCompanyContext();
+}
+
+function applyCompanyContext() {
+  const hub = document.getElementById('casafindsHub');
+  const picker = document.getElementById('companyContext');
+  if (picker) picker.value = currentCompanyContext;
+
+  const showHub = currentCompanyContext === 'casafinds' || currentCompanyContext === 'all';
+  if (hub) hub.style.display = showHub ? '' : 'none';
+
+  // If user is on a Casa Finds page and switches away, navigate to dashboard
+  const casaPages = ['products','ecom-orders','fulfillment','ecom-returns','affiliates','stock-sync','inbox','canned-responses','agent-dashboard','agent-tasks','agent-decisions'];
+  if (!showHub && casaPages.includes(currentPage)) {
+    navigate('dashboard');
+  }
+}
+
+function toggleNavSection(sectionId) {
+  const items = document.getElementById(sectionId);
+  const chevron = document.getElementById(sectionId + '-chevron');
+  if (!items) return;
+
+  const isCollapsed = items.classList.contains('collapsed');
+  if (isCollapsed) {
+    items.classList.remove('collapsed');
+    items.style.maxHeight = items.scrollHeight + 'px';
+    if (chevron) chevron.classList.remove('collapsed');
+    localStorage.removeItem('nexray_nav_' + sectionId + '_collapsed');
+  } else {
+    items.classList.add('collapsed');
+    items.style.maxHeight = '0px';
+    if (chevron) chevron.classList.add('collapsed');
+    localStorage.setItem('nexray_nav_' + sectionId + '_collapsed', '1');
+  }
+}
+
+function restoreNavSections() {
+  ['casafindsNav'].forEach(id => {
+    const items = document.getElementById(id);
+    const chevron = document.getElementById(id + '-chevron');
+    if (!items) return;
+    if (localStorage.getItem('nexray_nav_' + id + '_collapsed') === '1') {
+      items.classList.add('collapsed');
+      items.style.maxHeight = '0px';
+      if (chevron) chevron.classList.add('collapsed');
+    } else {
+      items.style.maxHeight = items.scrollHeight + 'px';
+    }
+  });
+}
+
 // ===== API CLIENT =====
 function getToken() { return localStorage.getItem('nexray_token'); }
 
@@ -166,6 +224,8 @@ async function handleLogin(e) {
     localStorage.setItem('nexray_token', data.token);
     currentUser = data.user;
     updateSidebarUser(currentUser);
+    applyCompanyContext();
+    restoreNavSections();
     showApp();
     navigate('dashboard');
     document.body.classList.add('ready');
@@ -234,6 +294,8 @@ async function initApp() {
     const user = await res.json();
     currentUser = user;
     updateSidebarUser(user);
+    applyCompanyContext();
+    restoreNavSections();
     showApp();
     navigate('dashboard');
   } catch (e) {
