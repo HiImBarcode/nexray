@@ -122,63 +122,69 @@
       </button>
     </div>
 
-    <div class="nav-section ecom-hub-section" style="display:none">
-      <div class="nav-section-label">Commerce</div>
-      <button class="nav-item" data-page="products" onclick="navigate('products')">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
-        Products &amp; Listings
-      </button>
-      <button class="nav-item" data-page="ecom-orders" onclick="navigate('ecom-orders')">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>
-        E-Commerce Orders
-        <span class="nav-badge" id="nav-ecom-orders-badge"></span>
-      </button>
-      <button class="nav-item" data-page="fulfillment" onclick="navigate('fulfillment')">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13"/><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>
-        Fulfillment
-      </button>
-      <button class="nav-item" data-page="ecom-returns" onclick="navigate('ecom-returns')">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
-        E-Com Returns
-      </button>
-      <button class="nav-item" data-page="affiliates" onclick="navigate('affiliates')">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
-        Affiliates
-      </button>
-      <button class="nav-item" data-page="stock-sync" onclick="navigate('stock-sync')">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
-        Stock Sync
-      </button>
-    </div>
-
-    <div class="nav-section ecom-hub-section" style="display:none">
-      <div class="nav-section-label">Messaging</div>
-      <button class="nav-item" data-page="inbox" onclick="navigate('inbox')">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
-        Unified Inbox
-        <span class="nav-badge" id="nav-inbox-badge"></span>
-      </button>
-      <button class="nav-item" data-page="canned-responses" onclick="navigate('canned-responses')">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-        Quick Replies
-      </button>
-    </div>
-
-    <div class="nav-section ecom-hub-section" style="display:none">
-      <div class="nav-section-label">AI Agents</div>
-      <button class="nav-item" data-page="agent-dashboard" onclick="navigate('agent-dashboard')">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
-        Agent Dashboard
-        <span class="nav-badge" id="nav-agent-review-badge"></span>
-      </button>
-      <button class="nav-item" data-page="agent-tasks" onclick="navigate('agent-tasks')">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-        Deep Tasks
-      </button>
-      <button class="nav-item" data-page="agent-decisions" onclick="navigate('agent-decisions')">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-        Decision Log
-      </button>
+    <div class="nav-section ecom-hub-section" id="ecomHubSection" style="display:none">
+      <div class="nav-section-label collapsible" onclick="toggleEcomHub()">
+        E-Commerce Hub
+        <svg class="collapse-chevron" id="ecomHub-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><polyline points="6 9 12 15 18 9"/></svg>
+      </div>
+      <div class="ecom-hub-body" id="ecomHubBody">
+        <div class="nav-sub-section">
+          <div class="nav-sub-label">Commerce</div>
+          <button class="nav-item" data-page="products" onclick="navigate('products')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+            Products &amp; Listings
+          </button>
+          <button class="nav-item" data-page="ecom-orders" onclick="navigate('ecom-orders')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>
+            E-Commerce Orders
+            <span class="nav-badge" id="nav-ecom-orders-badge"></span>
+          </button>
+          <button class="nav-item" data-page="fulfillment" onclick="navigate('fulfillment')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13"/><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>
+            Fulfillment
+          </button>
+          <button class="nav-item" data-page="ecom-returns" onclick="navigate('ecom-returns')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
+            E-Com Returns
+          </button>
+          <button class="nav-item" data-page="affiliates" onclick="navigate('affiliates')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+            Affiliates
+          </button>
+          <button class="nav-item" data-page="stock-sync" onclick="navigate('stock-sync')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+            Stock Sync
+          </button>
+        </div>
+        <div class="nav-sub-section">
+          <div class="nav-sub-label">Messaging</div>
+          <button class="nav-item" data-page="inbox" onclick="navigate('inbox')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+            Unified Inbox
+            <span class="nav-badge" id="nav-inbox-badge"></span>
+          </button>
+          <button class="nav-item" data-page="canned-responses" onclick="navigate('canned-responses')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            Quick Replies
+          </button>
+        </div>
+        <div class="nav-sub-section">
+          <div class="nav-sub-label">AI Agents</div>
+          <button class="nav-item" data-page="agent-dashboard" onclick="navigate('agent-dashboard')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
+            Agent Dashboard
+            <span class="nav-badge" id="nav-agent-review-badge"></span>
+          </button>
+          <button class="nav-item" data-page="agent-tasks" onclick="navigate('agent-tasks')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+            Deep Tasks
+          </button>
+          <button class="nav-item" data-page="agent-decisions" onclick="navigate('agent-decisions')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+            Decision Log
+          </button>
+        </div>
+      </div>
     </div>
 
     <div class="nav-section">

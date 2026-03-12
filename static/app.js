@@ -49,14 +49,47 @@ function applyCompanyContext() {
   if (picker) picker.value = currentCompanyContext;
 
   const showHub = currentCompanyContext === 'casafinds' || currentCompanyContext === 'all';
-  document.querySelectorAll('.ecom-hub-section').forEach(el => {
-    el.style.display = showHub ? '' : 'none';
-  });
+  const hub = document.getElementById('ecomHubSection');
+  if (hub) hub.style.display = showHub ? '' : 'none';
+
+  // Restore collapse state
+  const body = document.getElementById('ecomHubBody');
+  const chevron = document.getElementById('ecomHub-chevron');
+  if (body && showHub) {
+    if (localStorage.getItem('nexray_ecom_hub_collapsed') === '1') {
+      body.classList.add('collapsed');
+      body.style.maxHeight = '0px';
+      if (chevron) chevron.classList.add('collapsed');
+    } else {
+      body.classList.remove('collapsed');
+      body.style.maxHeight = body.scrollHeight + 'px';
+      if (chevron) chevron.classList.remove('collapsed');
+    }
+  }
 
   // If user is on an E-Commerce Hub page and switches away, navigate to dashboard
   const ecomPages = ['products','ecom-orders','fulfillment','ecom-returns','affiliates','stock-sync','inbox','canned-responses','agent-dashboard','agent-tasks','agent-decisions'];
   if (!showHub && ecomPages.includes(currentPage)) {
     navigate('dashboard');
+  }
+}
+
+function toggleEcomHub() {
+  const body = document.getElementById('ecomHubBody');
+  const chevron = document.getElementById('ecomHub-chevron');
+  if (!body) return;
+
+  const isCollapsed = body.classList.contains('collapsed');
+  if (isCollapsed) {
+    body.classList.remove('collapsed');
+    body.style.maxHeight = body.scrollHeight + 'px';
+    if (chevron) chevron.classList.remove('collapsed');
+    localStorage.removeItem('nexray_ecom_hub_collapsed');
+  } else {
+    body.classList.add('collapsed');
+    body.style.maxHeight = '0px';
+    if (chevron) chevron.classList.add('collapsed');
+    localStorage.setItem('nexray_ecom_hub_collapsed', '1');
   }
 }
 
