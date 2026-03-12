@@ -4,15 +4,15 @@ let inboxConversations = [];
 let inboxChannels = [];
 let activeConversationId = null;
 
-const PLATFORM_COLORS = {
+const MSG_PLATFORM_COLORS = {
   messenger: { bg: 'rgba(24,119,242,0.15)', color: '#1877F2', label: 'Messenger' },
   instagram: { bg: 'rgba(167,139,250,0.15)', color: '#A78BFA', label: 'Instagram' },
   whatsapp:  { bg: 'rgba(37,211,102,0.15)',  color: '#25D366', label: 'WhatsApp' },
   viber:     { bg: 'rgba(121,92,174,0.15)',   color: '#795CAE', label: 'Viber' },
 };
 
-function platformBadge(platform) {
-  const p = PLATFORM_COLORS[(platform || '').toLowerCase()] || { bg: 'var(--color-surface-2)', color: 'var(--color-text-muted)', label: platform || 'Unknown' };
+function msgPlatformBadge(platform) {
+  const p = MSG_PLATFORM_COLORS[(platform || '').toLowerCase()] || { bg: 'var(--color-surface-2)', color: 'var(--color-text-muted)', label: platform || 'Unknown' };
   return `<span style="display:inline-block;padding:2px 8px;border-radius:var(--radius-full);font-size:var(--text-xs);font-weight:600;background:${p.bg};color:${p.color}">${esc(p.label)}</span>`;
 }
 
@@ -145,7 +145,7 @@ function renderConversationList() {
     const unread = c.unread_count || 0;
     return `
       <div class="inbox-conv-row ${isActive ? 'active' : ''}" onclick="openConversation('${c.id}')">
-        <div style="flex-shrink:0">${platformBadge(platform)}</div>
+        <div style="flex-shrink:0">${msgPlatformBadge(platform)}</div>
         <div class="inbox-conv-info">
           <div class="inbox-conv-name">${esc(c.customer_name || 'Unknown')}</div>
           <div class="inbox-conv-preview">${esc(c.last_message_preview || '')}</div>
@@ -183,7 +183,7 @@ async function openConversation(id) {
   threadEl.innerHTML = `
     <div class="inbox-thread-header">
       <div>
-        <div class="inbox-thread-title">${esc(conv.customer_name || 'Unknown')} ${platformBadge(conv.platform)}</div>
+        <div class="inbox-thread-title">${esc(conv.customer_name || 'Unknown')} ${msgPlatformBadge(conv.platform)}</div>
         <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:2px">
           ${badge(statusLabel)}
           ${conv.priority ? `<span style="margin-left:var(--space-2)">${badge(conv.priority)}</span>` : ''}
@@ -388,7 +388,7 @@ async function loadChannelsInModal() {
         <thead><tr><th>Platform</th><th>Name</th><th>Identifier</th><th>Status</th><th>Actions</th></tr></thead>
         <tbody>
           ${channels.map(ch => `<tr>
-            <td>${platformBadge(ch.platform)}</td>
+            <td>${msgPlatformBadge(ch.platform)}</td>
             <td style="font-weight:500">${esc(ch.channel_name)}</td>
             <td style="font-size:var(--text-xs);color:var(--color-text-muted)">${esc(ch.channel_identifier || '')}</td>
             <td>${ch.is_active ? '<span style="color:var(--color-success)">Active</span>' : '<span style="color:var(--color-text-faint)">Inactive</span>'}</td>
@@ -606,7 +606,7 @@ async function loadCannedResponses() {
             ${templates.length === 0
               ? '<tr><td colspan="5" style="text-align:center;color:var(--color-text-muted)">No templates yet</td></tr>'
               : templates.map(t => `<tr>
-                  <td>${platformBadge(t.platform)}</td>
+                  <td>${msgPlatformBadge(t.platform)}</td>
                   <td style="font-weight:500">${esc(t.template_name)}</td>
                   <td style="font-size:var(--text-xs);color:var(--color-text-muted);max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc((t.content || '').substring(0, 100))}</td>
                   <td>${t.is_approved ? '<span style="color:var(--color-success)">Approved</span>' : '<span style="color:var(--color-warning)">Pending</span>'}</td>
